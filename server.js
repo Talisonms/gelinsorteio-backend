@@ -90,13 +90,15 @@ async function initDB() {
 // ASAAS CONFIG
 // ============================================
 const ASAAS_API_KEY = process.env.ASAAS_API_KEY || '$aact_prod_000MzkwODA2MWY2OGM3MWRlMDU2NWM3MzJlNzZmNGZhZGY6Ojg1ZTI5NmFjLTAyZmMtNGYzZi1hM2Y3LWZiOWIxNWZiODBhNzo6JGFhY2hfMjYyZjhlZjUtMzRhMC00NDhhLWExOTMtMDU2MGE0YmY2NmI3';
+const ABACATE_API_KEY = process.env.ABACATE_API_KEY || 'abc_dev_e0FnGxwgAk1UedtfeGnmHAe2';
+const ABACATE_API_URL = 'https://api.abacatepay.com/v2';
 
 app.use(cors());
 app.use(express.json());
 
 const TOTAL_TICKETS = 20000;
 const TICKET_PRICE = 1;
-const MIN_TICKETS = 5; // Asaas exige minimo R$ 5 por cobranca
+const MIN_TICKETS = 1; // AbacatePay permite valores pequenos
 
 function formatCPF(cpf) {
     return String(cpf || '').replace(/\D/g, '');
@@ -224,6 +226,55 @@ function asaasRequest(method, path, body) {
     });
 }
 
+// ============================================
+// ABACATEPAY API HELPER
+// ============================================
+function abacateRequest(method, path, body) {
+    return new Promise((resolve, reject) => {
+        const data = body ? JSON.stringify(body) : null;
+        const options = {
+            hostname: 'api.abacatepay.com',
+            path: path,
+            method: method,
+            headers: { 'Authorization': 'Bearer ' + ABACATE_API_KEY, 'Content-Type': 'application/json' }
+        };
+        if (data) options.headers['Content-Length'] = Buffer.byteLength(data);
+        const req = https.request(options, (res) => {
+            let chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                const text = Buffer.concat(chunks).toString('utf8');
+                let json = null;
+                try { json = text ? JSON.parse(text) : null; } catch (e) { json = text; }
+                if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
+                else { const err = new Error('Abacate error ' + res.statusCode); err.status = res.statusCode; err.body = json; reject(err); }
+            });
+        });
+        req.on('error', reject);
+        if (data) req.write(data);
+        req.end();
+    });
+}
+
+// Cria cobranca Pix no AbacatePay (valor em centavos)
+async function createAbacatePixCharge(quantity, totalCents, description, externalId) {
+    const body = {
+        method: 'PIX',
+        data: {
+            amount: totalCents, // em centavos
+            expiresIn: 3600, // 1 hora em segundos
+            description: description,
+            externalId: externalId
+        }
+    };
+    return await abacateRequest('POST', '/v2/transparents/create', body);
+}
+
+// Checa status de uma cobranca no AbacatePay
+async function checkAbacateStatus(externalId) {
+    return await abacateRequest('GET', '/v2/transparents/' + externalId + '/status');
+}
+
 // Cria (ou reusa) cliente no Asaas pelo CPF
 async function getOrCreateAsaasCustomer(buyer) {
     const cpf = formatCPF(buyer.cpf);
@@ -251,7 +302,7 @@ async function getPixQrCode(paymentId) {
 
 // Health check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Gelin Sorteio API', asaas: !!ASAAS_API_KEY, db: !!process.env.DATABASE_URL });
+    res.json({ status: 'ok', message: 'Gelin Sorteio API', asaas: !!ASAAS_API_KEY, abacate: !!ABACATE_API_KEY, db: !!process.env.DATABASE_URL });
 });
 
 // Stats
@@ -282,7 +333,7 @@ app.post('/api/buy', async (req, res) => {
         const { quantity, buyer } = req.body;
 
         if (!quantity || quantity < MIN_TICKETS || quantity > 100) {
-            return res.status(400).json({ success: false, error: 'Minimo ' + MIN_TICKETS + ' bilhetes' });
+            return res.status(400).json({ success: false, error: 'Minimo ' + MIN_TICKETS + ' bilhete(s)' });
         }
         if (!buyer || !formatCPF(buyer.cpf)) {
             return res.status(400).json({ success: false, error: 'CPF obrigatorio' });
@@ -303,28 +354,57 @@ app.post('/api/buy', async (req, res) => {
         }
         const selected = available.slice(0, quantity);
         const total = quantity * TICKET_PRICE;
+        const totalCents = total * 100; // AbacatePay usa centavos
+        const useAbacate = quantity < 5; // 1-4 bilhetes = AbacatePay, 5+ = Asaas
 
-        // 1) cliente no Asaas
-        const asaasCustomer = await getOrCreateAsaasCustomer(buyer);
+        let purchaseId, pixData;
 
-        // 2) cobranca Pix
-        const dueDate = new Date(Date.now() + 60 * 60 * 1000).toISOString().slice(0, 10);
-        const chargeBody = {
-            customer: asaasCustomer.id,
-            value: total,
-            dueDate: dueDate,
-            description: ('Gelin Sorteio - ' + quantity + ' bilhetes').substring(0, 100),
-            billingType: 'PIX',
-            pixExpirationInMinutes: 60
-        };
-        const payment = await asaasRequest('POST', '/v3/payments', chargeBody);
+        if (useAbacate) {
+            // ===== ABACATEPAY (1-4 bilhetes) =====
+            const externalId = 'gelin_' + uuidv4();
+            const charge = await createAbacatePixCharge(
+                quantity,
+                totalCents,
+                ('Gelin Sorteio - ' + quantity + ' bilhete(s)').substring(0, 100),
+                externalId
+            );
+            
+            // O AbacatePay retorna o QR Code na resposta
+            purchaseId = externalId;
+            pixData = {
+                qrCodeBase64: charge.qrCodeBase64 || charge.data?.qrCodeBase64 || null,
+                copyPaste: charge.qrCode || charge.data?.qrCode || charge.pix?.qrCode || null,
+                expiresAt: charge.expiresAt || charge.data?.expiresAt || null
+            };
+            
+            console.log('AbacatePay charge created:', JSON.stringify(charge).substring(0, 200));
+        } else {
+            // ===== ASAAS (5+ bilhetes) =====
+            const asaasCustomer = await getOrCreateAsaasCustomer(buyer);
+            
+            const dueDate = new Date(Date.now() + 60 * 60 * 1000).toISOString().slice(0, 10);
+            const chargeBody = {
+                customer: asaasCustomer.id,
+                value: total,
+                dueDate: dueDate,
+                description: ('Gelin Sorteio - ' + quantity + ' bilhetes').substring(0, 100),
+                billingType: 'PIX',
+                pixExpirationInMinutes: 60
+            };
+            const payment = await asaasRequest('POST', '/v3/payments', chargeBody);
+            const qr = await getPixQrCode(payment.id);
+            
+            purchaseId = payment.id;
+            pixData = {
+                qrCodeBase64: qr.encodedImage || null,
+                copyPaste: qr.payload || null,
+                expiresAt: qr.expirationDate || null
+            };
+        }
 
-        // 3) busca o QR Code
-        const qr = await getPixQrCode(payment.id);
-
-        // 4) guarda como PENDENTE no banco
+        // Guarda como PENDENTE no banco
         const purchase = {
-            id: payment.id,
+            id: purchaseId,
             tickets: selected,
             quantity: quantity,
             total: total,
@@ -337,14 +417,11 @@ app.post('/api/buy', async (req, res) => {
 
         res.json({
             success: true,
-            purchaseId: payment.id,
+            purchaseId: purchaseId,
+            provider: useAbacate ? 'abacate' : 'asaas',
             tickets: selected,
             total: total,
-            pix: {
-                qrCodeBase64: qr.encodedImage || null,
-                copyPaste: qr.payload || null,
-                expiresAt: qr.expirationDate || null
-            }
+            pix: pixData
         });
     } catch (error) {
         console.error('Error buying:', error);
@@ -447,19 +524,63 @@ app.post('/webhook/asaas', async (req, res) => {
     }
 });
 
-// Fallback: frontend consulta status direto no Asaas
+// Fallback: frontend consulta status direto no Asaas ou AbacatePay
 app.get('/api/check-charge/:id', async (req, res) => {
     try {
-        const payment = await asaasRequest('GET', '/v3/payments/' + req.params.id);
-        const status = payment.status; // PENDING, PAID, RECEIVED, OVERDUE, CANCELED
-        if (status === 'PAID' || status === 'RECEIVED' || status === 'CONFIRMED') {
-            await confirmPurchaseInDB(req.params.id);
-        } else if (status === 'CANCELED' || status === 'OVERDUE') {
-            await cancelPurchaseInDB(req.params.id);
+        const id = req.params.id;
+        
+        // Se comeÃ§a com 'gelin_', Ã© AbacatePay
+        if (id.startsWith('gelin_')) {
+            const statusData = await checkAbacateStatus(id);
+            const status = statusData.status || statusData.data?.status || 'PENDING';
+            // AbacatePay statuses: PENDING, PAID, CANCELED, EXPIRED
+            if (status === 'PAID' || status === 'CONFIRMED') {
+                await confirmPurchaseInDB(id);
+            } else if (status === 'CANCELED' || status === 'EXPIRED') {
+                await cancelPurchaseInDB(id);
+            }
+            res.json({ success: true, status: status, provider: 'abacate' });
+        } else {
+            // Ã‰ Asaas
+            const payment = await asaasRequest('GET', '/v3/payments/' + id);
+            const status = payment.status; // PENDING, PAID, RECEIVED, OVERDUE, CANCELED
+            if (status === 'PAID' || status === 'RECEIVED' || status === 'CONFIRMED') {
+                await confirmPurchaseInDB(id);
+            } else if (status === 'CANCELED' || status === 'OVERDUE') {
+                await cancelPurchaseInDB(id);
+            }
+            res.json({ success: true, status: status, provider: 'asaas' });
         }
-        res.json({ success: true, status: status });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Webhook AbacatePay
+app.post('/webhook/abacate', async (req, res) => {
+    try {
+        const event = req.body;
+        const eventType = event.type || event.event || '';
+        const externalId = event.externalId || event.data?.externalId || event.id || null;
+        
+        console.log('Abacate webhook received:', eventType, externalId);
+        
+        if (eventType === 'pix.paid' || eventType === 'payment.paid' || eventType === 'PAID') {
+            if (externalId) {
+                await confirmPurchaseInDB(externalId);
+                console.log('Abacate purchase confirmed:', externalId);
+            }
+        } else if (eventType === 'pix.canceled' || eventType === 'payment.canceled' || eventType === 'CANCELED' || eventType === 'EXPIRED') {
+            if (externalId) {
+                await cancelPurchaseInDB(externalId);
+                console.log('Abacate purchase canceled:', externalId);
+            }
+        }
+        
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Abacate webhook error:', err);
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -468,6 +589,7 @@ initDB().then(() => {
     app.listen(PORT, () => {
         console.log('Backend Gelinsorteio rodando na porta ' + PORT);
         console.log('Asaas configurado:', !!ASAAS_API_KEY);
+        console.log('AbacatePay configurado:', !!ABACATE_API_KEY);
         console.log('Database configurado:', !!process.env.DATABASE_URL);
         console.log('Webhook: POST http://localhost:' + PORT + '/webhook/asaas');
     });
