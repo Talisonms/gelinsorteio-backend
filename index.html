@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gelin Sorteio — iPhone 18 Pro Max ou R$ 7.000 no Pix</title>
+    <meta name="description" content="Rifa especial: ganhe um iPhone 18 Pro Max 256GB ou R$ 7.000 no Pix. Bilhetes a partir de R$ 1.">
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- HEADER -->
+    <header class="header">
+        <div class="container header-inner">
+            <div class="logo">
+                <img src="assets/logo-gelin.png" alt="Gelin do Tata" class="logo-img">
+            </div>
+            <nav class="nav">
+                <a href="#como-funciona">Como funciona</a>
+                <a href="#" onclick="openMyTicketsModal(); return false;">Meus bilhetes</a>
+                <a href="#comprar" class="nav-cta">Comprar bilhete</a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- HERO -->
+    <section class="hero">
+        <div class="container hero-inner">
+            <div class="hero-content">
+                <div class="badge">
+                    <span class="badge-dot"></span>
+                    Sorteio em andamento
+                </div>
+                <h1 class="hero-title">
+                    iPhone 18 Pro Max<br>
+                    <span class="hero-highlight">ou R$ 7.000 no Pix</span>
+                </h1>
+                <p class="hero-subtitle">
+                    Bilhetes a partir de R$ 1. O ganhador escolhe entre o celular ou o dinheiro.
+                    Assim que os bilhetes esgotarem, o sorteio acontece na hora.
+                </p>
+                
+                <!-- PROGRESS BAR -->
+                <div class="progress-section">
+                    <div class="progress-header">
+                        <span class="progress-label">Progresso da rifa</span>
+                        <span class="progress-percent" id="progressPercent">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                    </div>
+                    <div class="progress-stats">
+                        <span id="soldCount">0</span> bilhetes vendidos
+                    </div>
+                </div>
+
+                <!-- CTA BUTTONS -->
+                <div class="hero-cta">
+                    <a href="#comprar" class="btn btn-primary btn-lg">
+                        Comprar bilhete agora
+                    </a>
+                    <a href="#como-funciona" class="btn btn-secondary btn-lg">
+                        Como funciona
+                    </a>
+                </div>
+
+                <!-- TRUST BADGES -->
+                <div class="trust-badges">
+                    <div class="trust-item">
+                        <span class="trust-icon">✅</span>
+                        <span>Pagamento via Pix</span>
+                    </div>
+                    <div class="trust-item">
+                        <span class="trust-icon">🔒</span>
+                        <span>Compra segura</span>
+                    </div>
+                    <div class="trust-item">
+                        <span class="trust-icon">⚡</span>
+                        <span>Confirmação instantânea</span>
+                    </div>
+                </div>
+            </div>
+            <div class="hero-image">
+                <img src="assets/iphone-hero.png" alt="iPhone 18 Pro Max em 4 cores" class="hero-img">
+                <div class="hero-img-glow"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- COMO FUNCIONA -->
+    <section class="section" id="como-funciona">
+        <div class="container">
+            <h2 class="section-title">Como funciona</h2>
+            <p class="section-subtitle">Simples assim: compre, torça e ganhe.</p>
+            
+            <div class="steps-grid">
+                <div class="step-card">
+                    <div class="step-number">1</div>
+                    <h3>Escolha seus bilhetes</h3>
+                    <p>Compre de 1 a 100 bilhetes. Cada bilhete custa R$ 1. Quanto mais, maiores as chances.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-number">2</div>
+                    <h3>Pague via Pix</h3>
+                    <p>O pagamento é confirmado automaticamente. Você recebe seu bilhete na hora.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-number">3</div>
+                    <h3>Aguarde o sorteio</h3>
+                    <p>Assim que os bilhetes esgotarem, o sorteio acontece imediatamente.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-number">4</div>
+                    <h3>Ganhe e escolha</h3>
+                    <p>O vencedor escolhe: iPhone 18 Pro Max 256GB ou R$ 7.000 no Pix.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- COMPRA -->
+    <section class="section section-dark" id="comprar">
+        <div class="container">
+            <h2 class="section-title light">Comprar bilhetes</h2>
+            <p class="section-subtitle light">Escolha quantos bilhetes quer e pague via Pix.</p>
+            
+            <div class="purchase-grid">
+                <!-- R$ 1 ÚNICO -->
+                <div class="purchase-card" data-quantity="1">
+                    <div class="purchase-header">
+                        <span class="purchase-price">R$ 1</span>
+                        <span class="purchase-label">1 bilhete</span>
+                    </div>
+                    <ul class="purchase-features">
+                        <li>✓ 1 número aleatório</li>
+                        <li>✓ Pagamento via Pix</li>
+                        <li>✓ Confirmação instantânea</li>
+                    </ul>
+                    <button class="btn btn-primary btn-block" onclick="buyTickets(1)">
+                        Comprar 1 bilhete
+                    </button>
+                </div>
+
+                <!-- LOTE 10 -->
+                <div class="purchase-card featured" data-quantity="10">
+                    <div class="featured-badge">Mais popular</div>
+                    <div class="purchase-header">
+                        <span class="purchase-price">R$ 10</span>
+                        <span class="purchase-label">10 bilhetes</span>
+                    </div>
+                    <ul class="purchase-features">
+                        <li>✓ 10 números aleatórios</li>
+                        <li>✓ 10x mais chances</li>
+                        <li>✓ Pagamento via Pix</li>
+                        <li>✓ Confirmação instantânea</li>
+                    </ul>
+                    <button class="btn btn-primary btn-block" onclick="buyTickets(10)">
+                        Comprar 10 bilhetes
+                    </button>
+                </div>
+
+                <!-- LOTE 50 -->
+                <div class="purchase-card" data-quantity="50">
+                    <div class="purchase-header">
+                        <span class="purchase-price">R$ 50</span>
+                        <span class="purchase-label">50 bilhetes</span>
+                    </div>
+                    <ul class="purchase-features">
+                        <li>✓ 50 números aleatórios</li>
+                        <li>✓ 50x mais chances</li>
+                        <li>✓ Pagamento via Pix</li>
+                        <li>✓ Confirmação instantânea</li>
+                    </ul>
+                    <button class="btn btn-primary btn-block" onclick="buyTickets(50)">
+                        Comprar 50 bilhetes
+                    </button>
+                </div>
+
+                <!-- LOTE 100 -->
+                <div class="purchase-card" data-quantity="100">
+                    <div class="purchase-header">
+                        <span class="purchase-price">R$ 100</span>
+                        <span class="purchase-label">100 bilhetes</span>
+                    </div>
+                    <ul class="purchase-features">
+                        <li>✓ 100 números aleatórios</li>
+                        <li>✓ 100x mais chances</li>
+                        <li>✓ Pagamento via Pix</li>
+                        <li>✓ Confirmação instantânea</li>
+                    </ul>
+                    <button class="btn btn-primary btn-block" onclick="buyTickets(100)">
+                        Comprar 100 bilhetes
+                    </button>
+                </div>
+            </div>
+
+            <!-- MEUS BILHETES -->
+            <div class="my-tickets" id="myTickets" style="display: none;">
+                <h3 class="my-tickets-title">Seus bilhetes</h3>
+                <div class="my-tickets-list" id="myTicketsList"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <div class="container footer-inner">
+            <div class="footer-brand">
+                <span class="logo-icon">🧊</span>
+                <span class="logo-text">Gelin <strong>Sorteio</strong></span>
+            </div>
+            <p class="footer-copy">© 2026 Gelin Sorteio. Todos os direitos reservados.</p>
+            <p class="footer-disclaimer">
+                Esta é uma campanha de arrecadação com premiação. 
+                Participe por conta e risco.
+            </p>
+        </div>
+    </footer>
+
+    <!-- MODAL PAGAMENTO -->
+    <div class="modal-overlay" id="paymentModal">
+        <div class="modal">
+            <button class="modal-close" onclick="closeModal()">×</button>
+            <div class="modal-content" id="modalContent">
+                <!-- Preenchido via JS -->
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL CADASTRO -->
+    <div class="modal-overlay" id="registerModal">
+        <div class="modal modal-dark">
+            <button class="modal-close" onclick="closeRegisterModal()">×</button>
+            <div class="modal-content">
+                <h2 class="modal-title">Cadastro</h2>
+                <p class="modal-subtitle">Por favor, entre com seus dados para finalizar o cadastro.</p>
+                
+                <form id="registerForm" onsubmit="handleRegister(event)">
+                    <div class="form-group">
+                        <label for="regName">Nome</label>
+                        <input type="text" id="regName" placeholder="Nome" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="regLastName">Sobrenome</label>
+                        <input type="text" id="regLastName" placeholder="Sobrenome">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="regCPF">CPF</label>
+                        <input type="text" id="regCPF" placeholder="000.000.000-00" required 
+                               oninput="maskCPF(this)">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="regPhone">Telefone</label>
+                        <input type="tel" id="regPhone" placeholder="(00) 00000-0000" required 
+                               oninput="maskPhone(this)">
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary btn-block btn-register">
+                        Continuar
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL MEUS BILHETES -->
+    <div class="modal-overlay" id="myTicketsModal">
+        <div class="modal modal-dark">
+            <button class="modal-close" onclick="closeMyTicketsModal()">×</button>
+            <div class="modal-content">
+                <h2 class="modal-title">Meus Bilhetes</h2>
+                <p class="modal-subtitle">Digite seu CPF para ver seus bilhetes.</p>
+                
+                <form onsubmit="searchMyTickets(event)">
+                    <div class="form-group">
+                        <label for="searchCPF">CPF</label>
+                        <input type="text" id="searchCPF" placeholder="000.000.000-00" required 
+                               oninput="maskCPF(this)">
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary btn-block">
+                        Buscar bilhetes
+                    </button>
+                </form>
+                
+                <div id="myTicketsResult" style="display: none; margin-top: 24px;">
+                    <!-- Preenchido via JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST NOTIFICATION -->
+    <div class="toast" id="toast"></div>
+
+    <!-- BOTÃO DE SUPORTE FLUTUANTE -->
+    <a href="https://wa.me/SEUNUMEROAQUI?text=Olá!%20Tenho%20uma%20dúvida%20sobre%20a%20rifa." 
+       class="support-btn" 
+       target="_blank" 
+       rel="noopener"
+       title="Fale conosco">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="28" height="28">
+            <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/>
+        </svg>
+    </a>
+
+    <script src="app.js"></script>
+</body>
+</html>
