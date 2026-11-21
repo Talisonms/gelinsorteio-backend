@@ -12,7 +12,10 @@ const PORT = process.env.PORT || 3000;
 // ============================================
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ssl: { rejectUnauthorized: false },
+    connectionTimeoutMillis: 10000,  // 10s timeout pra conectar
+    idleInTransactionSessionTimeoutMillis: 30000,  // 30s timeout pra transações
+    max: 10  // maximo de conexoes simultaneas
 });
 
 // Create tables on startup
