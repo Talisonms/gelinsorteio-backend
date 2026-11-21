@@ -178,11 +178,17 @@ app.get('/api/my-tickets', (req, res) => {
         const purchases = db.purchases.filter(p => p.buyerCpf === formattedCpf);
         const tickets = purchases.flatMap(p => p.tickets);
         
+        // Find buyer info
+        const buyer = db.buyers.find(b => b.cpf === formattedCpf);
+        
         res.json({
             success: true,
             cpf: formattedCpf,
             tickets,
-            count: tickets.length
+            count: tickets.length,
+            totalTickets: tickets.length,
+            purchases,
+            buyer: buyer || { name: 'Comprador', lastName: '' }
         });
     } catch (error) {
         console.error('Error getting my tickets:', error);
