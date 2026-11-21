@@ -290,8 +290,8 @@ app.post('/webhook/asaas', async (req, res) => {
 app.get('/api/check-charge/:id', async (req, res) => {
     try {
         const payment = await asaasRequest('GET', '/v3/payments/' + req.params.id);
-        const status = payment.status; // PENDING, PAID, OVERDUE, CANCELED
-        if (status === 'PAID') confirmPurchase(req.params.id);
+        const status = payment.status; // PENDING, PAID, RECEIVED, OVERDUE, CANCELED
+        if (status === 'PAID' || status === 'RECEIVED' || status === 'CONFIRMED') confirmPurchase(req.params.id);
         else if (status === 'CANCELED' || status === 'OVERDUE') cancelPurchase(req.params.id);
         res.json({ success: true, status: status });
     } catch (error) {
