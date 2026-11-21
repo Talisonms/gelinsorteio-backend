@@ -2,9 +2,42 @@ const express = require('express');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const https = require('https');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ============================================
+// DATABASE CONFIG (Postgres)
+// ============================================
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+// Create tables on startup
+async function initDB() {
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS purchases (
+                id TEXT PRIMARY KEY,
+                tickets TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                total NUMERIC(10,2) NOT NULL,
+                buyer_cpf TEXT NOT NULL,
+                buyer_name TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                confirmed_at TIMESTAMP WITH TIME ZONE
+            );
+            CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status);
+            CREATE INDEX IF NOT EXISTS idx_purchases_buyer_cpf ON purchases(buyer_cpf);
+        `);
+        console.log('Database tables initialized');
+    } catch (err) {
+        console.error('Error initializing DB:', err);
+    }
+}
 
 // ============================================
 // ASAAS CONFIG
@@ -14,19 +47,104 @@ const ASAAS_API_KEY = process.env.ASAAS_API_KEY || '$aact_prod_000MzkwODA2MWY2OG
 app.use(cors());
 app.use(express.json());
 
-let db = {
-    tickets: [],      // bilhetes CONFIRMADOS (vendidos)
-    pending: [],      // compras aguardando pagamento
-    purchases: [],    // compras confirmadas
-    buyers: []        // compradores
-};
-
 const TOTAL_TICKETS = 20000;
 const TICKET_PRICE = 1;
 const MIN_TICKETS = 5; // Asaas exige minimo R$ 5 por cobranca
 
 function formatCPF(cpf) {
     return String(cpf || '').replace(/\D/g, '');
+}
+
+// ============================================
+// DATABASE HELPER FUNCTIONS
+// ============================================
+
+// Get all sold ticket numbers (from confirmed purchases)
+async function getSoldTickets() {
+    const result = await pool.query('SELECT tickets FROM purchases WHERE status = $1', ['paid']);
+    const sold = new Set();
+    result.rows.forEach(row => {
+        JSON.parse(row.tickets).forEach(t => sold.add(t));
+    });
+    return sold;
+}
+
+// Get all pending ticket numbers (from pending purchases)
+async function getPendingTickets() {
+    const result = await pool.query('SELECT tickets FROM purchases WHERE status = $1', ['pending']);
+    const pending = new Set();
+    result.rows.forEach(row => {
+        JSON.parse(row.tickets).forEach(t => pending.add(t));
+    });
+    return pending;
+}
+
+// Create a purchase in the database
+async function createPurchase(purchase) {
+    await pool.query(
+        'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+        [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.status, new Date()]
+    );
+}
+
+// Update purchase status to paid
+async function confirmPurchaseInDB(chargeId) {
+    await pool.query(
+        'UPDATE purchases SET status = $1, confirmed_at = $2 WHERE id = $3',
+        ['paid', new Date(), chargeId]
+    );
+}
+
+// Update purchase status to canceled
+async function cancelPurchaseInDB(chargeId) {
+    await pool.query(
+        'UPDATE purchases SET status = $1 WHERE id = $2',
+        ['canceled', chargeId]
+    );
+}
+
+// Get a purchase by ID
+async function getPurchaseById(id) {
+    const result = await pool.query('SELECT * FROM purchases WHERE id = $1', [id]);
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+        id: row.id,
+        tickets: JSON.parse(row.tickets),
+        quantity: row.quantity,
+        total: parseFloat(row.total),
+        buyerCpf: row.buyer_cpf,
+        buyerName: row.buyer_name,
+        status: row.status,
+        createdAt: row.created_at,
+        confirmedAt: row.confirmed_at
+    };
+}
+
+// Get all purchases
+async function getAllPurchases() {
+    const result = await pool.query('SELECT * FROM purchases ORDER BY created_at DESC');
+    return result.rows.map(row => ({
+        id: row.id,
+        tickets: JSON.parse(row.tickets),
+        quantity: row.quantity,
+        total: parseFloat(row.total),
+        buyerCpf: row.buyer_cpf,
+        buyerName: row.buyer_name,
+        status: row.status,
+        createdAt: row.created_at,
+        confirmedAt: row.confirmed_at
+    }));
+}
+
+// Get tickets for a specific CPF (only paid)
+async function getTicketsByCPF(cpf) {
+    const result = await pool.query('SELECT tickets FROM purchases WHERE buyer_cpf = $1 AND status = $2', [cpf, 'paid']);
+    const tickets = [];
+    result.rows.forEach(row => {
+        tickets.push(...JSON.parse(row.tickets));
+    });
+    return tickets;
 }
 
 // ============================================
@@ -86,20 +204,27 @@ async function getPixQrCode(paymentId) {
 
 // Health check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Gelin Sorteio API', asaas: !!ASAAS_API_KEY });
+    res.json({ status: 'ok', message: 'Gelin Sorteio API', asaas: !!ASAAS_API_KEY, db: !!process.env.DATABASE_URL });
 });
 
 // Stats
-app.get('/api/stats', (req, res) => {
-    const sold = db.tickets.length;
-    res.json({
-        success: true,
-        totalTickets: TOTAL_TICKETS,
-        sold: sold,
-        available: TOTAL_TICKETS - sold,
-        pendingCount: db.pending.length,
-        percentage: Math.round((sold / TOTAL_TICKETS) * 100)
-    });
+app.get('/api/stats', async (req, res) => {
+    try {
+        const soldSet = await getSoldTickets();
+        const pendingSet = await getPendingTickets();
+        const sold = soldSet.size;
+        res.json({
+            success: true,
+            totalTickets: TOTAL_TICKETS,
+            sold: sold,
+            available: TOTAL_TICKETS - sold - pendingSet.size,
+            pendingCount: pendingSet.size,
+            percentage: Math.round((sold / TOTAL_TICKETS) * 100)
+        });
+    } catch (error) {
+        console.error('Error getting stats:', error);
+        res.status(500).json({ success: false, error: 'Erro ao buscar stats' });
+    }
 });
 
 // ============================================
@@ -116,7 +241,9 @@ app.post('/api/buy', async (req, res) => {
             return res.status(400).json({ success: false, error: 'CPF obrigatorio' });
         }
 
-        const taken = new Set([...db.tickets, ...db.pending.flatMap(p => p.tickets)]);
+        const soldSet = await getSoldTickets();
+        const pendingSet = await getPendingTickets();
+        const taken = new Set([...soldSet, ...pendingSet]);
         const available = [];
         for (let i = 1; i <= TOTAL_TICKETS; i++) if (!taken.has(i)) available.push(i);
         if (available.length < quantity) {
@@ -148,7 +275,7 @@ app.post('/api/buy', async (req, res) => {
         // 3) busca o QR Code
         const qr = await getPixQrCode(payment.id);
 
-        // 4) guarda como PENDENTE
+        // 4) guarda como PENDENTE no banco
         const purchase = {
             id: payment.id,
             tickets: selected,
@@ -159,7 +286,7 @@ app.post('/api/buy', async (req, res) => {
             status: 'pending',
             createdAt: new Date().toISOString()
         };
-        db.pending.push(purchase);
+        await createPurchase(purchase);
 
         res.json({
             success: true,
@@ -182,15 +309,26 @@ app.post('/api/buy', async (req, res) => {
 });
 
 // Status de uma compra
-app.get('/api/purchase/:id', (req, res) => {
-    const p = db.pending.find(x => x.id === req.params.id) || db.purchases.find(x => x.id === req.params.id);
-    if (!p) return res.status(404).json({ success: false, error: 'Compra nao encontrada' });
-    res.json({ success: true, purchase: p });
+app.get('/api/purchase/:id', async (req, res) => {
+    try {
+        const p = await getPurchaseById(req.params.id);
+        if (!p) return res.status(404).json({ success: false, error: 'Compra nao encontrada' });
+        res.json({ success: true, purchase: p });
+    } catch (error) {
+        console.error('Error getting purchase:', error);
+        res.status(500).json({ success: false, error: 'Erro interno' });
+    }
 });
 
 // Admin
-app.get('/api/purchases', (req, res) => {
-    res.json({ success: true, purchases: db.purchases, pending: db.pending });
+app.get('/api/purchases', async (req, res) => {
+    try {
+        const purchases = await getAllPurchases();
+        res.json({ success: true, purchases: purchases });
+    } catch (error) {
+        console.error('Error getting purchases:', error);
+        res.status(500).json({ success: false, error: 'Erro interno' });
+    }
 });
 
 // Register buyer
@@ -201,88 +339,64 @@ app.post('/api/register', (req, res) => {
             return res.status(400).json({ success: false, error: 'Dados incompletos' });
         }
         const formattedCpf = formatCPF(cpf);
-        let buyer = db.buyers.find(b => b.cpf === formattedCpf);
-        if (buyer) {
-            buyer.name = name; buyer.lastName = lastName; buyer.phone = phone;
-        } else {
-            buyer = { id: uuidv4(), name, lastName, cpf: formattedCpf, phone, createdAt: new Date().toISOString() };
-            db.buyers.push(buyer);
-        }
-        res.json({ success: true, buyer });
+        // Buyers are now tracked via purchases, so just return success
+        res.json({ success: true, buyer: { cpf: formattedCpf, name, lastName, phone } });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Erro interno' });
     }
 });
 
 // Meus bilhetes por CPF (so CONFIRMADOS)
-app.get('/api/my-tickets', (req, res) => {
+app.get('/api/my-tickets', async (req, res) => {
     try {
         const { cpf } = req.query;
-        if (!cpf) return res.status(400).json({ success: false, error: 'CPF obrigatorio' });
+        if (!cpf) {
+            return res.status(400).json({ success: false, error: 'CPF obrigatorio' });
+        }
         const formattedCpf = formatCPF(cpf);
-        const purchases = db.purchases.filter(p => p.buyerCpf === formattedCpf);
-        const tickets = purchases.flatMap(p => p.tickets);
-        const buyer = db.buyers.find(b => b.cpf === formattedCpf);
-        res.json({
-            success: true, cpf: formattedCpf, tickets,
-            count: tickets.length, totalTickets: tickets.length,
-            purchases, buyer: buyer || { name: 'Comprador', lastName: '' }
-        });
+        const tickets = await getTicketsByCPF(formattedCpf);
+        res.json({ success: true, cpf: formattedCpf, tickets: tickets });
+    } catch (error) {
+        console.error('Error getting my tickets:', error);
+        res.status(500).json({ success: false, error: 'Erro interno' });
+    }
+});
+
+// Reset (admin only)
+app.post('/api/reset', async (req, res) => {
+    try {
+        await pool.query('DELETE FROM purchases');
+        res.json({ success: true, message: 'Banco resetado' });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Erro interno' });
     }
 });
 
-// Reset (teste)
-app.post('/api/reset', (req, res) => {
-    db = { tickets: [], pending: [], purchases: [], buyers: [] };
-    res.json({ success: true, message: 'Database reset' });
-});
-
-function confirmPurchase(chargeId) {
-    const idx = db.pending.findIndex(p => p.id === chargeId);
-    if (idx === -1) return false;
-    const purchase = db.pending.splice(idx, 1)[0];
-    purchase.status = 'paid';
-    purchase.paidAt = new Date().toISOString();
-    db.purchases.push(purchase);
-    db.tickets.push(...purchase.tickets);
-    console.log('PIX CONFIRMADO -> liberados', purchase.tickets.length, 'bilhetes:', purchase.id);
-    return true;
-}
-
-function cancelPurchase(chargeId) {
-    const idx = db.pending.findIndex(p => p.id === chargeId);
-    if (idx === -1) return false;
-    const purchase = db.pending.splice(idx, 1)[0];
-    purchase.status = 'canceled';
-    console.log('PIX CANCELADO/EXPIRADO -> devolvidos bilhetes:', purchase.id);
-    return true;
-}
-
-// WEBHOOK ASAAS
+// Webhook handler
 app.post('/webhook/asaas', async (req, res) => {
-    res.sendStatus(200);
     try {
-        let event = req.body;
-        if (typeof event === 'string') {
-            try { event = JSON.parse(event); } catch(e) { event = {}; }
+        const event = req.body;
+        const eventType = event.type || event.event;
+        const chargeId = event.data && event.data.id ? event.data.id : (event.id || null);
+
+        console.log('Webhook received:', eventType, chargeId);
+
+        if (eventType === 'PAYMENT_CONFIRMED' || eventType === 'PAYMENT_RECEIVED' || eventType === 'paymentPaid' || eventType === 'chargePaid' || eventType === 'chargePaidPix') {
+            if (chargeId) {
+                await confirmPurchaseInDB(chargeId);
+                console.log('Purchase confirmed:', chargeId);
+            }
+        } else if (eventType === 'PAYMENT_OVERDUE' || eventType === 'PAYMENT_DELETED' || eventType === 'paymentCanceled' || eventType === 'chargeCanceled' || eventType === 'chargeExpired') {
+            if (chargeId) {
+                await cancelPurchaseInDB(chargeId);
+                console.log('Purchase canceled:', chargeId);
+            }
         }
-        if (!event || typeof event !== 'object') event = {};
-        const type = event.type || '';
-        const data = event.data || {};
-        const chargeId = data.id || (typeof data === 'string' ? data : null);
-        console.log('WEBHOOK RECEIVED:', type, 'chargeId:', chargeId);
-        // Eventos de pagamento confirmado (Pix caiu)
-        if ((type === 'PAYMENT_CONFIRMED' || type === 'PAYMENT_RECEIVED' || type === 'paymentPaid' || type === 'chargePaid' || type === 'chargePaidPix') && chargeId) {
-            confirmPurchase(chargeId);
-        }
-        // Eventos de cancelamento/expiracao
-        else if ((type === 'PAYMENT_OVERDUE' || type === 'PAYMENT_DELETED' || type === 'paymentCanceled' || type === 'chargeCanceled' || type === 'chargeExpired') && chargeId) {
-            cancelPurchase(chargeId);
-        }
+
+        res.json({ success: true });
     } catch (err) {
         console.error('Webhook error:', err);
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -291,16 +405,26 @@ app.get('/api/check-charge/:id', async (req, res) => {
     try {
         const payment = await asaasRequest('GET', '/v3/payments/' + req.params.id);
         const status = payment.status; // PENDING, PAID, RECEIVED, OVERDUE, CANCELED
-        if (status === 'PAID' || status === 'RECEIVED' || status === 'CONFIRMED') confirmPurchase(req.params.id);
-        else if (status === 'CANCELED' || status === 'OVERDUE') cancelPurchase(req.params.id);
+        if (status === 'PAID' || status === 'RECEIVED' || status === 'CONFIRMED') {
+            await confirmPurchaseInDB(req.params.id);
+        } else if (status === 'CANCELED' || status === 'OVERDUE') {
+            await cancelPurchaseInDB(req.params.id);
+        }
         res.json({ success: true, status: status });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-app.listen(PORT, () => {
-    console.log('Backend Gelinsorteio rodando na porta ' + PORT);
-    console.log('Asaas configurado:', !!ASAAS_API_KEY);
-    console.log('Webhook: POST http://localhost:' + PORT + '/webhook/asaas');
+// Initialize DB and start server
+initDB().then(() => {
+    app.listen(PORT, () => {
+        console.log('Backend Gelinsorteio rodando na porta ' + PORT);
+        console.log('Asaas configurado:', !!ASAAS_API_KEY);
+        console.log('Database configurado:', !!process.env.DATABASE_URL);
+        console.log('Webhook: POST http://localhost:' + PORT + '/webhook/asaas');
+    });
+}).catch(err => {
+    console.error('Failed to initialize DB:', err);
+    process.exit(1);
 });
