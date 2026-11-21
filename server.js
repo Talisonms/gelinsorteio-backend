@@ -13,15 +13,59 @@ const PORT = process.env.PORT || 3000;
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false },
-    connectionTimeoutMillis: 10000,  // 10s timeout pra conectar
-    idleInTransactionSessionTimeoutMillis: 30000,  // 30s timeout pra transações
-    max: 10  // maximo de conexoes simultaneas
+    connectionTimeoutMillis: 5000,   // 5s timeout pra conectar (mais agressivo)
+    idleTimeoutMillis: 20000,        // conexao ociosa morre em 20s
+    max: 5                           // maximo de conexoes simultaneas (reduzido)
 });
+
+// Log de eventos da pool
+pool.on('connect', (client) => {
+    console.log('POOL: nova conexao estabelecida');
+});
+pool.on('error', (err) => {
+    console.error('POOL: erro na conexao:', err.message);
+});
+pool.on('acquire', (client) => {
+    console.log('POOL: conexao adquirida');
+});
+pool.on('remove', (client) => {
+    console.log('POOL: conexao removida');
+});
+
+// Wrapper com RETRY automatico: se a conexao cair, tenta de novo (ate 3x)
+async function queryDB(text, params) {
+    let lastErr;
+    const startTime = Date.now();
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            console.log(`DB query iniciando (tentativa ${attempt}/3):`, text.substring(0, 50));
+            const result = await pool.query(text, params);
+            console.log(`DB query OK em ${Date.now() - startTime}ms`);
+            return result;
+        } catch (err) {
+            lastErr = err;
+            console.error(`DB query falhou (tentativa ${attempt}/3) após ${Date.now() - startTime}ms:`, err.message);
+            if (attempt < 3) {
+                await new Promise(r => setTimeout(r, 500 * attempt)); // espera 500ms, 1s
+            }
+        }
+    }
+    throw lastErr;
+}
+
+// Keepalive: testa a conexao a cada 30s pra pool nunca acumular conexao morta
+setInterval(async () => {
+    try {
+        await pool.query('SELECT 1');
+    } catch (err) {
+        console.error('Keepalive DB falhou:', err.message);
+    }
+}, 30000);
 
 // Create tables on startup
 async function initDB() {
     try {
-        await pool.query(`
+        await queryDB(`
             CREATE TABLE IF NOT EXISTS purchases (
                 id TEXT PRIMARY KEY,
                 tickets TEXT NOT NULL,
@@ -64,7 +108,7 @@ function formatCPF(cpf) {
 
 // Get all sold ticket numbers (from confirmed purchases)
 async function getSoldTickets() {
-    const result = await pool.query('SELECT tickets FROM purchases WHERE status = $1', ['paid']);
+    const result = await queryDB('SELECT tickets FROM purchases WHERE status = $1', ['paid']);
     const sold = new Set();
     result.rows.forEach(row => {
         JSON.parse(row.tickets).forEach(t => sold.add(t));
@@ -74,7 +118,7 @@ async function getSoldTickets() {
 
 // Get all pending ticket numbers (from pending purchases)
 async function getPendingTickets() {
-    const result = await pool.query('SELECT tickets FROM purchases WHERE status = $1', ['pending']);
+    const result = await queryDB('SELECT tickets FROM purchases WHERE status = $1', ['pending']);
     const pending = new Set();
     result.rows.forEach(row => {
         JSON.parse(row.tickets).forEach(t => pending.add(t));
@@ -84,7 +128,7 @@ async function getPendingTickets() {
 
 // Create a purchase in the database
 async function createPurchase(purchase) {
-    await pool.query(
+    await queryDB(
         'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
         [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.status, new Date()]
     );
@@ -92,7 +136,7 @@ async function createPurchase(purchase) {
 
 // Update purchase status to paid
 async function confirmPurchaseInDB(chargeId) {
-    await pool.query(
+    await queryDB(
         'UPDATE purchases SET status = $1, confirmed_at = $2 WHERE id = $3',
         ['paid', new Date(), chargeId]
     );
@@ -100,7 +144,7 @@ async function confirmPurchaseInDB(chargeId) {
 
 // Update purchase status to canceled
 async function cancelPurchaseInDB(chargeId) {
-    await pool.query(
+    await queryDB(
         'UPDATE purchases SET status = $1 WHERE id = $2',
         ['canceled', chargeId]
     );
@@ -108,7 +152,7 @@ async function cancelPurchaseInDB(chargeId) {
 
 // Get a purchase by ID
 async function getPurchaseById(id) {
-    const result = await pool.query('SELECT * FROM purchases WHERE id = $1', [id]);
+    const result = await queryDB('SELECT * FROM purchases WHERE id = $1', [id]);
     if (result.rows.length === 0) return null;
     const row = result.rows[0];
     return {
@@ -126,7 +170,7 @@ async function getPurchaseById(id) {
 
 // Get all purchases
 async function getAllPurchases() {
-    const result = await pool.query('SELECT * FROM purchases ORDER BY created_at DESC');
+    const result = await queryDB('SELECT * FROM purchases ORDER BY created_at DESC');
     return result.rows.map(row => ({
         id: row.id,
         tickets: JSON.parse(row.tickets),
@@ -142,7 +186,7 @@ async function getAllPurchases() {
 
 // Get tickets for a specific CPF (only paid)
 async function getTicketsByCPF(cpf) {
-    const result = await pool.query('SELECT tickets FROM purchases WHERE buyer_cpf = $1 AND status = $2', [cpf, 'paid']);
+    const result = await queryDB('SELECT tickets FROM purchases WHERE buyer_cpf = $1 AND status = $2', [cpf, 'paid']);
     const tickets = [];
     result.rows.forEach(row => {
         tickets.push(...JSON.parse(row.tickets));
@@ -368,7 +412,7 @@ app.get('/api/my-tickets', async (req, res) => {
 // Reset (admin only)
 app.post('/api/reset', async (req, res) => {
     try {
-        await pool.query('DELETE FROM purchases');
+        await queryDB('DELETE FROM purchases');
         res.json({ success: true, message: 'Banco resetado' });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Erro interno' });
