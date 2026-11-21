@@ -1,4 +1,4 @@
-# Backend Gelinsorteio 🎰
+# Backend Gelinsorteio G
 
 API para gerenciar bilhetes da rifa.
 
