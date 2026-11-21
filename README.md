@@ -1,60 +1,90 @@
-# Gelin Sorteio 🎰
+# Backend Gelinsorteio 🎰
 
-Site de rifa para iPhone 18 Pro Max 256GB ou R$ 7.000 no Pix.
+API para gerenciar bilhetes da rifa.
 
-## Estrutura
+## Como rodar
 
-```
-gelinsorteio/
-├── index.html      # Página principal
-├── style.css       # Estilos
-├── app.js          # Lógica (compra, Pix, progresso)
-└── assets/
-    └── iphone-hero.jpg  # Foto do iPhone
+### 1. Instalar dependências
+```bash
+cd gelinsorteio-backend
+npm install
 ```
 
-## Como colocar no ar
+### 2. Iniciar servidor
+```bash
+npm start
+```
 
-### Opção 1: Netlify (mais fácil)
-1. Acesse https://www.netlify.com
-2. Arraste a pasta `gelinsorteio` pra dentro do site
-3. Pronto — seu site está no ar
+Ou em modo desenvolvimento (auto-reload):
+```bash
+npm run dev
+```
 
-### Opção 2: Vercel
-1. Acesse https://vercel.com
-2. Importe a pasta como projeto
-3. Deploy automático
+## Endpoints
 
-### Opção 3: GitHub Pages
-1. Crie um repositório no GitHub
-2. Suba os arquivos
-3. Ative Pages nas configurações do repo
+### GET /api/health
+Verifica se o backend está rodando.
 
-## Configurar o Mercado Pago
+### GET /api/stats
+Retorna estatísticas da rifa:
+```json
+{
+  "sold": 150,
+  "total": 20000,
+  "percent": 1,
+  "available": 19850
+}
+```
 
-1. Acesse https://www.mercadopago.com.br/developers
-2. Crie uma conta (grátis)
-3. Vá em "Suas integrações" → "Criar aplicação"
-4. Copie o **Access Token**
-5. Abra `app.js` e cole no campo `MERCADO_PAGO_ACCESS_TOKEN`
-6. Mude `MP_TEST_MODE` para `false` quando quiser receber de verdade
+### POST /api/buy
+Compra bilhetes. Body:
+```json
+{
+  "quantity": 10,
+  "buyerEmail": "opcional@email.com"
+}
+```
 
-## Configurar seu Pix
+Resposta:
+```json
+{
+  "success": true,
+  "purchaseId": "uuid-aqui",
+  "tickets": ["03847", "12903", "00561"],
+  "total": 10
+}
+```
 
-No `app.js`, altere:
-- `PIX_KEY`: seu CPF, CNPJ, e-mail ou chave aleatória
-- `PIX_NAME`: nome que aparece pro comprador
-- `PIX_CITY`: sua cidade
+### GET /api/purchase/:id
+Busca uma compra pelo ID.
 
-## Personalizar
+### GET /api/purchases
+Lista todas as compras (admin).
 
-- **Nome da campanha**: mude `CAMPAIGN_NAME` no `app.js`
-- **Total de bilhetes**: mude `TOTAL_TICKETS`
-- **Preço do bilhete**: mude `TICKET_PRICE`
-- **Cores**: edite as variáveis CSS no topo do `style.css`
+### POST /api/reset
+Reseta o banco de dados (admin - cuidado!).
 
-## Importante
+## Banco de dados
 
-- O site salva os bilhetes vendidos no `localStorage` do navegador
-- Para produção real, você precisará de um backend (ou usar o Mercado Pago como fonte de verdade)
-- O sorteio em 100% é manual: quando a barra chegar lá, você faz o sorteio e anuncia
+O backend usa um arquivo JSON local (`db.json`) para armazenar os dados. É simples e suficiente para rifas pequenas. Para produção com muito tráfego, considere migrar para um banco real (MongoDB, PostgreSQL, etc.).
+
+## Integrar com o frontend
+
+No `app.js` do frontend, troque a lógica local por chamadas à API:
+
+```javascript
+// Exemplo: comprar bilhetes
+async function buyTickets(quantity) {
+    const response = await fetch('http://localhost:3000/api/buy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quantity })
+    });
+    const data = await response.json();
+    
+    if (data.success) {
+        // Mostrar bilhetes na tela
+        showSuccessModal(data.tickets, data.total);
+    }
+}
+```
