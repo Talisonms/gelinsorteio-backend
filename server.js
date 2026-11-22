@@ -603,14 +603,17 @@ app.get('/api/admin/buyers', async (req, res) => {
         
         const status = req.query.status || 'confirmed'; // confirmed, pending, all
         
+        // Mapear 'confirmed' para 'paid' (o status real no banco)
+        const dbStatus = status === 'confirmed' ? 'paid' : status;
+        
         let query;
         let params = [];
         
-        if (status === 'all') {
+        if (dbStatus === 'all') {
             query = 'SELECT * FROM purchases ORDER BY created_at DESC';
         } else {
             query = 'SELECT * FROM purchases WHERE status = $1 ORDER BY created_at DESC';
-            params = [status];
+            params = [dbStatus];
         }
         
         const result = await queryDB(query, params);
