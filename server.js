@@ -591,6 +591,47 @@ app.get('/api/check-charge/:id', async (req, res) => {
     }
 });
 
+// Lista todos os compradores (pra conferência no sorteio)
+app.get('/api/admin/buyers', async (req, res) => {
+    try {
+        const senha = req.query.senha || '';
+        if (senha !== ADMIN_PASSWORD) {
+            return res.status(401).json({ success: false, error: 'Senha incorreta' });
+        }
+        
+        const status = req.query.status || 'confirmed'; // confirmed, pending, all
+        
+        let query;
+        let params = [];
+        
+        if (status === 'all') {
+            query = 'SELECT * FROM purchases ORDER BY created_at DESC';
+        } else {
+            query = 'SELECT * FROM purchases WHERE status = $1 ORDER BY created_at DESC';
+            params = [status];
+        }
+        
+        const result = await queryDB(query, params);
+        
+        res.json({
+            success: true,
+            buyers: result.rows.map(r => ({
+                id: r.id,
+                tickets: JSON.parse(r.tickets),
+                quantity: r.quantity,
+                total: Number(r.total),
+                cpf: r.buyer_cpf,
+                name: r.buyer_name,
+                status: r.status,
+                createdAt: r.created_at,
+                confirmedAt: r.confirmed_at
+            }))
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // ===== PAINEL ADMIN =====
 // Lista compras pendentes (pra conferência)
 app.get('/api/admin/pending', async (req, res) => {
