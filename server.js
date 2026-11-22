@@ -640,6 +640,7 @@ app.get('/api/admin/buyers', async (req, res) => {
                 total: Number(r.total),
                 cpf: r.buyer_cpf,
                 name: r.buyer_name,
+                phone: r.buyer_phone || '',
                 status: r.status,
                 createdAt: r.created_at,
                 confirmedAt: r.confirmed_at
