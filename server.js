@@ -447,6 +447,7 @@ app.post('/api/buy', async (req, res) => {
             total: total,
             buyerCpf: formatCPF(buyer.cpf),
             buyerName: ((buyer.name || '') + ' ' + (buyer.lastName || '')).trim(),
+            buyerPhone: buyer.phone || '',
             status: 'pending',
             createdAt: new Date().toISOString()
         };
