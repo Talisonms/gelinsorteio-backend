@@ -147,10 +147,19 @@ async function getPendingTickets() {
 
 // Create a purchase in the database
 async function createPurchase(purchase) {
-    await queryDB(
-        'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-        [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.status, new Date()]
-    );
+    // Tenta inserir com buyer_phone, se falhar (coluna não existe), insere sem
+    try {
+        await queryDB(
+            'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, buyer_phone, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+            [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.buyerPhone || '', purchase.status, new Date()]
+        );
+    } catch (e) {
+        // Fallback: coluna buyer_phone não existe ainda
+        await queryDB(
+            'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+            [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.status, new Date()]
+        );
+    }
 }
 
 // Update purchase status to paid
@@ -181,6 +190,7 @@ async function getPurchaseById(id) {
         total: parseFloat(row.total),
         buyerCpf: row.buyer_cpf,
         buyerName: row.buyer_name,
+        buyerPhone: row.buyer_phone || '',
         status: row.status,
         createdAt: row.created_at,
         confirmedAt: row.confirmed_at
@@ -197,6 +207,7 @@ async function getAllPurchases() {
         total: parseFloat(row.total),
         buyerCpf: row.buyer_cpf,
         buyerName: row.buyer_name,
+        buyerPhone: row.buyer_phone || '',
         status: row.status,
         createdAt: row.created_at,
         confirmedAt: row.confirmed_at
@@ -700,6 +711,20 @@ app.post('/api/admin/cancel', async (req, res) => {
         await cancelPurchaseInDB(id);
         console.log('Admin cancelou compra:', id);
         res.json({ success: true, message: 'Compra cancelada, bilhetes liberados.' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Adiciona coluna buyer_phone na tabela purchases (se não existir)
+app.post('/api/admin/add-phone-column', async (req, res) => {
+    try {
+        const { senha } = req.body;
+        if (!senha || senha !== ADMIN_PASSWORD) {
+            return res.status(401).json({ success: false, error: 'Senha incorreta' });
+        }
+        await queryDB('ALTER TABLE purchases ADD COLUMN IF NOT EXISTS buyer_phone TEXT');
+        res.json({ success: true, message: 'Coluna buyer_phone adicionada!' });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
