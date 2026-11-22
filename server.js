@@ -4,6 +4,9 @@ const { v4: uuidv4 } = require('uuid');
 const https = require('https');
 const { Pool } = require('pg');
 
+// Cache em memória: externalId -> chargeId (AbacatePay)
+const abacateChargeCache = new Map();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -68,7 +71,6 @@ async function initDB() {
         await queryDB(`
             CREATE TABLE IF NOT EXISTS purchases (
                 id TEXT PRIMARY KEY,
-                provider_charge_id TEXT,
                 tickets TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
                 total NUMERIC(10,2) NOT NULL,
@@ -78,9 +80,6 @@ async function initDB() {
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 confirmed_at TIMESTAMP WITH TIME ZONE
             );
-            
-            // Adiciona a coluna provider_charge_id se não existir
-            ALTER TABLE purchases ADD COLUMN IF NOT EXISTS provider_charge_id TEXT;
             CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status);
             CREATE INDEX IF NOT EXISTS idx_purchases_buyer_cpf ON purchases(buyer_cpf);
         `);
@@ -135,8 +134,8 @@ async function getPendingTickets() {
 // Create a purchase in the database
 async function createPurchase(purchase) {
     await queryDB(
-        'INSERT INTO purchases (id, provider_charge_id, tickets, quantity, total, buyer_cpf, buyer_name, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-        [purchase.id, purchase.providerChargeId || null, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.status, new Date()]
+        'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+        [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.status, new Date()]
     );
 }
 
@@ -276,12 +275,11 @@ async function createAbacatePixCharge(quantity, totalCents, description, externa
 
 // Checa status de uma cobranca no AbacatePay
 async function checkAbacateStatus(externalId) {
-    // Busca o provider_charge_id no banco
-    const result = await queryDB('SELECT provider_charge_id FROM purchases WHERE id = $1', [externalId]);
-    if (result.rows.length === 0 || !result.rows[0].provider_charge_id) {
-        throw new Error('provider_charge_id not found');
+    // Busca o chargeId no cache
+    const chargeId = abacateChargeCache.get(externalId);
+    if (!chargeId) {
+        throw new Error('Charge ID not found in cache');
     }
-    const chargeId = result.rows[0].provider_charge_id;
     return await abacateRequest('GET', '/v2/transparents/' + chargeId);
 }
 
@@ -382,6 +380,12 @@ app.post('/api/buy', async (req, res) => {
             // O AbacatePay retorna: { data: { brCode, brCodeBase64, expiresAt, ... } }
             const abData = charge.data || charge;
             purchaseId = externalId;
+            
+            // Salva o chargeId no cache pra consulta posterior
+            if (abData.id) {
+                abacateChargeCache.set(externalId, abData.id);
+            }
+            
             pixData = {
                 qrCodeBase64: abData.brCodeBase64 || null,
                 copyPaste: abData.brCode || null,
