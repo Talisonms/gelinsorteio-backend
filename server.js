@@ -78,6 +78,9 @@ async function initDB() {
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 confirmed_at TIMESTAMP WITH TIME ZONE
             );
+            
+            // Adiciona a coluna provider_charge_id se não existir
+            ALTER TABLE purchases ADD COLUMN IF NOT EXISTS provider_charge_id TEXT;
             CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status);
             CREATE INDEX IF NOT EXISTS idx_purchases_buyer_cpf ON purchases(buyer_cpf);
         `);
