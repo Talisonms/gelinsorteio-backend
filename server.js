@@ -472,6 +472,10 @@ app.post('/api/buy', async (req, res) => {
         if (error.status === 404) {
             return res.status(503).json({ success: false, error: 'PIX_INDISPONIVEL' });
         }
+        // Se for erro do Asaas (400), mostrar mensagem clara
+        if (error.message && error.message.includes('Asaas error 400')) {
+            return res.status(400).json({ success: false, error: 'Dados invalidos. Verifique seu CPF e telefone.' });
+        }
         res.status(500).json({ success: false, error: 'Erro ao criar pagamento: ' + (error.message || '') });
     }
 });
