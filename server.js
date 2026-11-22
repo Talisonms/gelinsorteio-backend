@@ -432,7 +432,7 @@ app.post('/api/buy', async (req, res) => {
                 dueDate: dueDate,
                 description: ('Gelin Sorteio - ' + quantity + ' bilhetes').substring(0, 100),
                 billingType: 'PIX',
-                pixExpirationInMinutes: 60
+                pixExpirationInMinutes: 5
             };
             const payment = await asaasRequest('POST', '/v3/payments', chargeBody);
             const qr = await getPixQrCode(payment.id);
@@ -852,6 +852,55 @@ async function expireOldPendingPurchases() {
 setInterval(expireOldPendingPurchases, 5 * 60 * 1000);
 // Rodar também ao iniciar
 expireOldPendingPurchases();
+
+
+// Endpoint pra adicionar compra manualmente
+app.post('/api/admin/add-purchase', async (req, res) => {
+    try {
+        const { senha, cpf, name, phone, quantity, total } = req.body;
+        
+        if (senha !== ADMIN_PASSWORD) {
+            return res.status(401).json({ success: false, error: 'Senha incorreta' });
+        }
+        
+        if (!cpf || cpf.length !== 11) {
+            return res.status(400).json({ success: false, error: 'CPF inválido' });
+        }
+        
+        // Gerar bilhetes únicos
+        const tickets = [];
+        while (tickets.length < quantity) {
+            const ticket = Math.floor(Math.random() * TOTAL_TICKETS) + 1;
+            if (!tickets.includes(ticket)) {
+                tickets.push(ticket);
+            }
+        }
+        
+        // Gerar ID único
+        const id = 'pay_' + Math.random().toString(36).substr(2, 16);
+        const now = new Date().toISOString();
+        
+        // Inserir no banco
+        await queryDB(
+            `INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, buyer_phone, status, created_at, confirmed_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'paid', $8, $8)`,
+            [id, JSON.stringify(tickets), quantity, total, formatCPF(cpf), name, phone || '', now]
+        );
+        
+        console.log('Compra adicionada manualmente:', id, 'CPF:', cpf);
+        
+        res.json({ 
+            success: true, 
+            message: 'Compra adicionada!',
+            id: id,
+            tickets: tickets
+        });
+        
+    } catch (error) {
+        console.error('Erro ao adicionar compra:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 // Initialize DB and start server
 initDB().then(() => {
