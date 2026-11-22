@@ -827,6 +827,32 @@ app.post('/webhook/abacate', async (req, res) => {
     }
 });
 
+// ============================================
+// EXPIRAÇÃO AUTOMÁTICA DE PENDENTES (30 minutos)
+// ============================================
+const PENDING_EXPIRY_MINUTES = 5;
+
+async function expireOldPendingPurchases() {
+    try {
+        const cutoff = new Date(Date.now() - PENDING_EXPIRY_MINUTES * 60 * 1000);
+        const result = await queryDB(
+            'DELETE FROM purchases WHERE status = $1 AND created_at < $2',
+            ['pending', cutoff]
+        );
+        const count = result.rowCount || 0;
+        if (count > 0) {
+            console.log('Expirados automaticamente:', count, 'compras pendentes');
+        }
+    } catch (error) {
+        console.error('Erro ao expirar pendentes:', error);
+    }
+}
+
+// Rodar a cada 5 minutos
+setInterval(expireOldPendingPurchases, 5 * 60 * 1000);
+// Rodar também ao iniciar
+expireOldPendingPurchases();
+
 // Initialize DB and start server
 initDB().then(() => {
     app.listen(PORT, () => {
