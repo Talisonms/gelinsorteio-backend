@@ -355,7 +355,7 @@ app.post('/api/buy', async (req, res) => {
         const selected = available.slice(0, quantity);
         const total = quantity * TICKET_PRICE;
         const totalCents = total * 100; // AbacatePay usa centavos
-        const useAbacate = quantity < 5; // 1-4 bilhetes = AbacatePay, 5+ = Asaas
+        const useAbacate = quantity === 1; // 1 bilhete = AbacatePay, 5+ = Asaas
 
         let purchaseId, pixData;
 
