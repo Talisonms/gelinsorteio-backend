@@ -4,6 +4,10 @@ const { v4: uuidv4 } = require('uuid');
 const https = require('https');
 const { Pool } = require('pg');
 
+function base64_encode(str) {
+    return Buffer.from(str).toString('base64');
+}
+
 // Cache em memória: externalId -> chargeId (AbacatePay)
 const abacateChargeCache = new Map();
 
@@ -13,8 +17,11 @@ const PORT = process.env.PORT || 3000;
 // ============================================
 // DATABASE CONFIG (Postgres)
 // ============================================
+// Connection string do banco (com fallback)
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://gelinsorteio:9fSBimcLcQN9tPK3GMPjQofZw65JgGHg@dpg-dc114rvf3r2c73b8u1cg-a/gelinsorteio_ya75';
+
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: DATABASE_URL,
     ssl: { rejectUnauthorized: false },
     connectionTimeoutMillis: 5000,   // 5s timeout pra conectar (mais agressivo)
     idleTimeoutMillis: 20000,        // conexao ociosa morre em 20s
@@ -95,6 +102,13 @@ async function initDB() {
 const ASAAS_API_KEY = process.env.ASAAS_API_KEY || '$aact_prod_000MzkwODA2MWY2OGM3MWRlMDU2NWM3MzJlNzZmNGZhZGY6Ojg1ZTI5NmFjLTAyZmMtNGYzZi1hM2Y3LWZiOWIxNWZiODBhNzo6JGFhY2hfMjYyZjhlZjUtMzRhMC00NDhhLWExOTMtMDU2MGE0YmY2NmI3';
 const ABACATE_API_KEY = process.env.ABACATE_API_KEY || 'abc_dev_e0FnGxwgAk1UedtfeGnmHAe2';
 const ABACATE_API_URL = 'https://api.abacatepay.com/v2';
+
+// Painel admin
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'gelin2026';
+
+// Nubank Pix API
+const NUBANK_API_KEY = process.env.NUBANK_API_KEY || '';
+const NUBANK_API_URL = 'https://api.pm.nubank.com.br/api/pix/cobranca/v2';
 
 app.use(cors());
 app.use(express.json());
@@ -318,14 +332,15 @@ app.get('/api/stats', async (req, res) => {
     try {
         const soldSet = await getSoldTickets();
         const pendingSet = await getPendingTickets();
-        const sold = soldSet.size;
+        // Contar vendidos + pendentes (pra barra de progresso mostrar em tempo real)
+        const totalReserved = soldSet.size + pendingSet.size;
         res.json({
             success: true,
             totalTickets: TOTAL_TICKETS,
-            sold: sold,
-            available: TOTAL_TICKETS - sold - pendingSet.size,
+            sold: totalReserved,  // Vendidos + Pendentes
+            available: TOTAL_TICKETS - totalReserved,
             pendingCount: pendingSet.size,
-            percentage: Math.round((sold / TOTAL_TICKETS) * 100)
+            percentage: Math.round((totalReserved / TOTAL_TICKETS) * 100)
         });
     } catch (error) {
         console.error('Error getting stats:', error);
@@ -363,36 +378,30 @@ app.post('/api/buy', async (req, res) => {
         const selected = available.slice(0, quantity);
         const total = quantity * TICKET_PRICE;
         const totalCents = total * 100; // AbacatePay usa centavos
-        const useAbacate = quantity === 1; // 1 bilhete = AbacatePay, 5+ = Asaas
+        const useNubank = quantity === 1; // 1 bilhete = Nubank, 5+ = Asaas
 
         let purchaseId, pixData;
 
-        if (useAbacate) {
-            // ===== ABACATEPAY (1-4 bilhetes) =====
-            const externalId = 'gelin_' + uuidv4();
-            const charge = await createAbacatePixCharge(
-                quantity,
-                totalCents,
-                ('Gelin Sorteio - ' + quantity + ' bilhete(s)').substring(0, 100),
-                externalId
-            );
+        if (useNubank) {
+            // ===== NUBANK (1 bilhete) =====
+            const charge = await createNubankPixCharge(quantity, buyer);
             
-            // O AbacatePay retorna: { data: { brCode, brCodeBase64, expiresAt, ... } }
-            const abData = charge.data || charge;
-            purchaseId = externalId;
+            // O Nubank retorna: { qrcode: { id, copiaECola, qrCodeBase64, ... } }
+            const nbData = charge.qrcode || charge;
+            purchaseId = 'nubank_' + (nbData.id || Date.now());
             
             // Salva o chargeId no cache pra consulta posterior
-            if (abData.id) {
-                abacateChargeCache.set(externalId, abData.id);
+            if (nbData.id) {
+                abacateChargeCache.set(purchaseId, nbData.id);
             }
             
             pixData = {
-                qrCodeBase64: abData.brCodeBase64 || null,
-                copyPaste: abData.brCode || null,
-                expiresAt: abData.expiresAt || null
+                qrCodeBase64: nbData.qrCodeBase64 || null,
+                copyPaste: nbData.copiaECola || null,
+                expiresAt: nbData.validUntil || null
             };
             
-            console.log('AbacatePay charge created:', JSON.stringify(charge).substring(0, 300));
+            console.log('Nubank charge created:', JSON.stringify(charge).substring(0, 300));
         } else {
             // ===== ASAAS (5+ bilhetes) =====
             const asaasCustomer = await getOrCreateAsaasCustomer(buyer);
@@ -544,11 +553,22 @@ app.get('/api/check-charge/:id', async (req, res) => {
     try {
         const id = req.params.id;
         
-        // Se comeÃ§a com 'gelin_', Ã© AbacatePay
-        if (id.startsWith('gelin_')) {
+        // Se começa com 'nubank_', é Nubank
+        if (id.startsWith('nubank_')) {
+            const nubankId = id.replace('nubank_', '');
+            const statusData = await checkNubankChargeStatus(nubankId);
+            const status = statusData.status || statusData.qrcode?.status || 'PENDING';
+            // Nubank statuses: PENDING, PAID, CANCELED, EXPIRED
+            if (status === 'PAID' || status === 'CONFIRMED') {
+                await confirmPurchaseInDB(id);
+            } else if (status === 'CANCELED' || status === 'EXPIRED') {
+                await cancelPurchaseInDB(id);
+            }
+            res.json({ success: true, status: status, provider: 'nubank' });
+        } else if (id.startsWith('gelin_')) {
+            // AbacatePay
             const statusData = await checkAbacateStatus(id);
             const status = statusData.status || statusData.data?.status || 'PENDING';
-            // AbacatePay statuses: PENDING, PAID, CANCELED, EXPIRED
             if (status === 'PAID' || status === 'CONFIRMED') {
                 await confirmPurchaseInDB(id);
             } else if (status === 'CANCELED' || status === 'EXPIRED') {
@@ -567,6 +587,110 @@ app.get('/api/check-charge/:id', async (req, res) => {
             res.json({ success: true, status: status, provider: 'asaas' });
         }
     } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ===== PAINEL ADMIN =====
+// Lista compras pendentes (pra conferência)
+app.get('/api/admin/pending', async (req, res) => {
+    try {
+        const senha = req.query.senha || '';
+        if (senha !== ADMIN_PASSWORD) {
+            return res.status(401).json({ success: false, error: 'Senha incorreta' });
+        }
+        const result = await queryDB(
+            'SELECT id, tickets, quantity, total, buyer_cpf, buyer_name, created_at FROM purchases WHERE status = $1 ORDER BY created_at DESC LIMIT 200',
+            ['pending']
+        );
+        res.json({
+            success: true,
+            pending: result.rows.map(r => ({
+                id: r.id,
+                tickets: JSON.parse(r.tickets),
+                quantity: r.quantity,
+                total: Number(r.total),
+                cpf: r.buyer_cpf,
+                name: r.buyer_name,
+                createdAt: r.created_at
+            }))
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Confirma uma compra específica pelo ID
+app.post('/api/admin/confirm', async (req, res) => {
+    try {
+        const { id, senha } = req.body;
+        if (!senha || senha !== ADMIN_PASSWORD) {
+            return res.status(401).json({ success: false, error: 'Senha incorreta' });
+        }
+        const result = await queryDB(
+            'SELECT * FROM purchases WHERE id = $1 AND status = $2',
+            [id, 'pending']
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Compra não encontrada ou já confirmada' });
+        }
+        await confirmPurchaseInDB(id);
+        console.log('Admin confirmou compra:', id);
+        res.json({ success: true, message: 'Compra confirmada!' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Cancela uma compra (libera os bilhetes de volta)
+app.post('/api/admin/cancel', async (req, res) => {
+    try {
+        const { id, senha } = req.body;
+        if (!senha || senha !== ADMIN_PASSWORD) {
+            return res.status(401).json({ success: false, error: 'Senha incorreta' });
+        }
+        await cancelPurchaseInDB(id);
+        console.log('Admin cancelou compra:', id);
+        res.json({ success: true, message: 'Compra cancelada, bilhetes liberados.' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Confirmação manual de pagamento (QR Code estático do Nubank)
+app.post('/api/confirm-manual', async (req, res) => {
+    try {
+        const { cpf, total } = req.body;
+        
+        if (!cpf || cpf.length !== 11) {
+            return res.status(400).json({ success: false, error: 'CPF inválido' });
+        }
+        
+        // Busca a compra pending mais recente desse CPF
+        const result = await queryDB(
+            'SELECT * FROM purchases WHERE buyer_cpf = $1 AND status = $2 ORDER BY created_at DESC LIMIT 1',
+            [formatCPF(cpf), 'pending']
+        );
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Compra não encontrada' });
+        }
+        
+        const purchase = result.rows[0];
+        
+        // Confirma a compra
+        await confirmPurchaseInDB(purchase.id);
+        
+        console.log('Pagamento manual confirmado:', purchase.id, 'CPF:', cpf);
+        
+        res.json({ 
+            success: true, 
+            message: 'Pagamento confirmado!',
+            tickets: JSON.parse(purchase.tickets)
+        });
+        
+    } catch (error) {
+        console.error('Erro na confirmação manual:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
