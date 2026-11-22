@@ -369,15 +369,16 @@ app.post('/api/buy', async (req, res) => {
                 externalId
             );
             
-            // O AbacatePay retorna o QR Code na resposta
+            // O AbacatePay retorna: { data: { brCode, brCodeBase64, expiresAt, ... } }
+            const abData = charge.data || charge;
             purchaseId = externalId;
             pixData = {
-                qrCodeBase64: charge.qrCodeBase64 || charge.data?.qrCodeBase64 || null,
-                copyPaste: charge.qrCode || charge.data?.qrCode || charge.pix?.qrCode || null,
-                expiresAt: charge.expiresAt || charge.data?.expiresAt || null
+                qrCodeBase64: abData.brCodeBase64 || null,
+                copyPaste: abData.brCode || null,
+                expiresAt: abData.expiresAt || null
             };
             
-            console.log('AbacatePay charge created:', JSON.stringify(charge).substring(0, 200));
+            console.log('AbacatePay charge created:', JSON.stringify(charge).substring(0, 300));
         } else {
             // ===== ASAAS (5+ bilhetes) =====
             const asaasCustomer = await getOrCreateAsaasCustomer(buyer);
