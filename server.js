@@ -610,7 +610,9 @@ app.get('/api/admin/buyers', async (req, res) => {
         let params = [];
         
         if (dbStatus === 'all') {
-            query = 'SELECT * FROM purchases ORDER BY created_at DESC';
+            // 'all' mostra apenas confirmados (paid) e pendentes, esconde cancelados
+            query = 'SELECT * FROM purchases WHERE status IN ($1, $2) ORDER BY created_at DESC';
+            params = ['paid', 'pending'];
         } else {
             query = 'SELECT * FROM purchases WHERE status = $1 ORDER BY created_at DESC';
             params = [dbStatus];
