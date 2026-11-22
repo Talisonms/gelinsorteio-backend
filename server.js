@@ -354,6 +354,8 @@ app.get('/api/stats', async (req, res) => {
 app.post('/api/buy', async (req, res) => {
     try {
         const { quantity, buyer } = req.body;
+        
+        // Usar Asaas
 
         if (!quantity || quantity < MIN_TICKETS || quantity > 100) {
             return res.status(400).json({ success: false, error: 'Minimo ' + MIN_TICKETS + ' bilhete(s)' });
@@ -442,7 +444,7 @@ app.post('/api/buy', async (req, res) => {
         res.json({
             success: true,
             purchaseId: purchaseId,
-            provider: useAbacate ? 'abacate' : 'asaas',
+            provider: 'asaas',
             tickets: selected,
             total: total,
             pix: pixData
