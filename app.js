@@ -24,27 +24,17 @@ const CONFIG = {
     // URL do backend (ajuste conforme onde voc hospedar)
     // Local: http://localhost:3000
     // Produo: https://seu-backend.com
-    API_URL: 'http://localhost:3000',
+    API_URL: 'https://gelinsorteio-backend-v2.onrender.com',
     
     // true = usar backend (recomendado)
     // false = usar localStorage (modo demo)
-    USE_BACKEND: false,
+    USE_BACKEND: true,
     
     // ============================================
-    // MERCADO PAGO  COLOQUE SUAS CHAVES AQUI
+    // ASAAS - Pix automatico (chave fica no backend)
+    // O backend cria a cobranca e confirma sozinho.
     // ============================================
-    MERCADO_PAGO_ACCESS_TOKEN: 'SEU_ACCESS_TOKEN_AQUI',
-    
-    // true = modo teste (pagamentos simulados)
-    // false = modo produo (recebe dinheiro de verdade)
-    MP_TEST_MODE: true,
-    
-    // ============================================
-    // SEU PIX  PARA RECEBER O DINHEIRO
-    // ============================================
-    PIX_KEY: 'seu-cpf-ou-cnpj-aqui',
-    PIX_NAME: 'Gelin Sorteio',
-    PIX_CITY: 'SAO PAULO'
+    PAYMENT_PROVIDER: 'asaas'
 };
 
 // ============================================
@@ -79,24 +69,28 @@ function saveState() {
 
 // Busca estatsticas do backend
 async function fetchStats() {
-    if (!CONFIG.USE_BACKEND) {
-        // Modo demo: usar localStorage
-        const sold = state.soldTickets.length;
-        const percent = Math.round((sold / CONFIG.TOTAL_TICKETS) * 100);
-        return { sold, total: CONFIG.TOTAL_TICKETS, percent, available: CONFIG.TOTAL_TICKETS - sold };
+    if (CONFIG.USE_BACKEND) {
+        try {
+            const response = await fetch(CONFIG.API_URL + '/api/stats');
+            if (!response.ok) throw new Error('Erro ao buscar stats');
+            const data = await response.json();
+            if (data.success) {
+                return {
+                    sold: data.sold,
+                    total: data.totalTickets,
+                    percent: data.percentage,
+                    available: data.available
+                };
+            }
+        } catch (error) {
+            console.error('Error fetching stats:', error);
+        }
     }
     
-    try {
-        const response = await fetch(`${CONFIG.API_URL}/api/stats`);
-        if (!response.ok) throw new Error('Erro ao buscar stats');
-        return await response.json();
-    } catch (error) {
-        console.error('Error fetching stats:', error);
-        // Fallback para localStorage
-        const sold = state.soldTickets.length;
-        const percent = Math.round((sold / CONFIG.TOTAL_TICKETS) * 100);
-        return { sold, total: CONFIG.TOTAL_TICKETS, percent, available: CONFIG.TOTAL_TICKETS - sold };
-    }
+    // Fallback: localStorage
+    const sold = state.soldTickets.length;
+    const percent = Math.round((sold / CONFIG.TOTAL_TICKETS) * 100);
+    return { sold, total: CONFIG.TOTAL_TICKETS, percent, available: CONFIG.TOTAL_TICKETS - sold };
 }
 
 // Compra bilhetes via backend
@@ -159,9 +153,10 @@ function formatTicket(num) {
 // ============================================
    // UI  ATUALIZAR PROGRESSO
    // ============================================
-function updateProgressUI() {
-    const sold = state.soldTickets.length;
-    const percent = Math.round((sold / CONFIG.TOTAL_TICKETS) * 100);
+async function updateProgressUI() {
+    const stats = await fetchStats();
+    const sold = stats.sold;
+    const percent = stats.percent;
     
     document.getElementById('progressFill').style.width = percent + '%';
     document.getElementById('progressPercent').textContent = percent + '%';
@@ -169,7 +164,7 @@ function updateProgressUI() {
     
     // Se chegou a 100%, mostrar mensagem especial
     if (percent >= 100) {
-        showToast(' Todos os bilhetes foram vendidos! Sorteio em andamento!', 'success');
+        showToast('Todos os bilhetes foram vendidos! Sorteio em andamento!', 'success');
     }
 }
 
@@ -242,26 +237,10 @@ async function buyTickets(quantity) {
     }
     
     try {
-        // Comprar via backend (ou local se USE_BACKEND = false)
-        const tickets = await buyTicketsAPI(quantity, buyer.cpf);
-        
-        if (!tickets || tickets.length === 0) {
-            showToast('No h bilhetes disponveis!', 'error');
-            return;
-        }
-        
-        const total = tickets.length * CONFIG.TICKET_PRICE;
-        
-        // Salvar localmente (pra mostrar na sesso)
-        state.myTickets.push(...tickets.map(t => parseInt(t)));
-        saveState();
-        
-        // Atualizar UI
-        updateProgressUI();
-        updateMyTicketsUI();
-        
-        // Mostrar modal com resumo
-        showPaymentModal(tickets.length, total, tickets.map(t => parseInt(t)));
+        // Com Asaas: o backend reserva os bilhetes e cria a cobranca Pix.
+        // Os bilhetes so viram "seus" depois que o Pix confirmar (onPaymentConfirmed).
+        const total = quantity * CONFIG.TICKET_PRICE;
+        showPaymentModal(quantity, total, []);
         
     } catch (error) {
         console.error('Error buying:', error);
@@ -284,8 +263,9 @@ async function showPaymentModal(quantity, total, tickets) {
             </div>
             <div class="modal-summary-row">
                 <span>Nmeros</span>
-                <span>${tickets.map(t => formatTicket(t)).join(', ')}</span>
+                <span>${tickets.slice(0, 5).map(t => formatTicket(t)).join(', ')}${tickets.length > 5 ? ' ... +' + (tickets.length - 5) + ' mais' : ''}</span>
             </div>
+            <p style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 8px;">Veja todos os numeros em "Meus bilhetes" apos a compra.</p>
             <div class="modal-summary-row modal-summary-total">
                 <span>Total</span>
                 <span>R$ ${total.toFixed(2).replace('.', ',')}</span>
@@ -301,194 +281,169 @@ async function showPaymentModal(quantity, total, tickets) {
 }
 
 // Cria pagamento Pix via Mercado Pago
+// Cria cobranca Pix via backend (Asaas) e mostra QR Code
 async function createPixPayment(quantity, total, tickets) {
     const content = document.getElementById('modalContent');
-    
-    // Mostrar loading
-    content.innerHTML = `
-        <div class="pix-section">
-            <div class="spinner" style="margin: 40px auto;"></div>
-            <p style="color: var(--text-secondary); margin-top: 16px;">Gerando cdigo Pix...</p>
-        </div>
-    `;
-    
+
+    content.innerHTML =
+        '<div class="pix-section">' +
+        '<div class="spinner" style="margin: 40px auto;"></div>' +
+        '<p style="color: var(--text-secondary); margin-top: 16px;">Gerando codigo Pix...</p>' +
+        '</div>';
+
     try {
-        // Verificar se token est configurado
-        if (CONFIG.MERCADO_PAGO_ACCESS_TOKEN === 'SEU_ACCESS_TOKEN_AQUI') {
-            throw new Error('CONFIGURACAO_INCOMPLETA');
-        }
-        
-        // Criar transao no Mercado Pago
-        const response = await fetch('https://api.mercadopago.com/v1/payments', {
+        const buyer = getSavedBuyer();
+        const response = await fetch(CONFIG.API_URL + '/api/buy', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${CONFIG.MERCADO_PAGO_ACCESS_TOKEN}`,
-                'X-Idempotency-Key': Date.now().toString()
-            },
-            body: JSON.stringify({
-                transaction_amount: total,
-                description: `${CONFIG.CAMPAIGN_NAME} - ${quantity} bilhete(s)`,
-                payment_method_id: 'pix',
-                payer: {
-                    email: 'comprador@gelinsorteio.com'
-                },
-                metadata: {
-                    quantity: quantity,
-                    tickets: tickets,
-                    campaign: CONFIG.CAMPAIGN_NAME
-                }
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quantity: quantity, buyer: buyer })
         });
-        
+
         const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.message || 'Erro ao criar pagamento');
+
+        if (!data.success) {
+            if (data.error === 'PIX_INDISPONIVEL') {
+                throw new Error('Pagamento Pix ainda nao esta disponivel. Tente em instantes.');
+            }
+            throw new Error(data.error || 'Erro ao criar pagamento');
         }
-        
-        // Extrair QR Code e cdigo copia-e-cola
-        const qrCode = data.point_of_interaction.transaction_data.qr_code;
-        const qrCodeBase64 = data.point_of_interaction.transaction_data.qr_code_base64;
-        
-        // Mostrar QR Code
-        showPixQR(qrCode, qrCodeBase64, quantity, total, tickets);
-        
+
+        // Guarda a compra pendente na memoria
+        window._currentPurchase = {
+            purchaseId: data.purchaseId,
+            quantity: quantity,
+            total: data.total,
+            tickets: data.tickets
+        };
+
+        // Mostra QR Code real do Asaas
+        showAsaasPix(data.pix, data.total, data.tickets);
+
     } catch (error) {
-        if (error.message === 'CONFIGURACAO_INCOMPLETA') {
-            // Modo demo: mostrar QR Code fake
-            showDemoPix(quantity, total, tickets);
-        } else {
-            content.innerHTML = `
-                <div class="pix-section">
-                    <div class="pix-status error">
-                         ${error.message}
-                    </div>
-                    <button class="btn btn-secondary btn-block" style="margin-top: 16px;" onclick="closeModal()">
-                        Fechar
-                    </button>
-                </div>
-            `;
-        }
+        console.error('Error creating pix:', error);
+        content.innerHTML =
+            '<div class="pix-section">' +
+            '<div class="pix-status error">' + error.message + '</div>' +
+            '<button class="btn btn-secondary btn-block" style="margin-top: 16px;" onclick="closeModal()">Fechar</button>' +
+            '</div>';
     }
 }
 
-// Mostra QR Code real
-function showPixQR(qrCode, qrCodeBase64, quantity, total, tickets) {
+// Mostra QR Code do Asaas e inicia confirmacao automatica
+function showAsaasPix(pix, total, tickets) {
     const content = document.getElementById('modalContent');
-    
+
     let qrImage = '';
-    if (qrCodeBase64) {
-        qrImage = `<img src="data:image/png;base64,${qrCodeBase64}" alt="QR Code Pix">`;
+    if (pix.qrCodeBase64) {
+        qrImage = '<img src="data:image/png;base64,' + pix.qrCodeBase64 + '" alt="QR Code Pix">';
+    } else if (pix.copyPaste || pix.qrCode) {
+        qrImage = '<img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(pix.copyPaste || pix.qrCode) + '" alt="QR Code Pix">';
     } else {
-        // Gerar QR Code via API externa
-        qrImage = `<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrCode)}" alt="QR Code Pix">`;
+        qrImage = '<p style="color: var(--text-secondary);">QR Code indisponivel. Use o copia e cola abaixo.</p>';
     }
-    
-    content.innerHTML = `
-        <div class="pix-section">
-            <h2 class="modal-title">Pague via Pix</h2>
-            <p class="modal-subtitle">Escaneie o QR Code ou copie o cdigo abaixo.</p>
-            
-            <div class="pix-qr">${qrImage}</div>
-            
-            <div class="pix-code" onclick="copyPixCode(this)" title="Clique para copiar">
-                ${qrCode}
-            </div>
-            
-            <p class="pix-instructions">
-                Abra o app do seu banco, escolha "Pagar com Pix",<br>
-                escaneie o QR Code ou cole o cdigo acima.
-            </p>
-            
-            <div class="pix-status pending" id="pixStatus">
-                <div class="spinner"></div>
-                Aguardando pagamento...
-            </div>
-            
-            <!-- Boto para simular confirmao (modo demo) -->
-            <button class="btn btn-secondary btn-block" style="margin-top: 16px;" onclick="confirmPayment(${quantity}, ${total}, '${JSON.stringify(tickets)}')">
-                 J paguei (confirmao manual)
-            </button>
-        </div>
-    `;
-    
-    // Iniciar polling para verificar pagamento (a cada 5 segundos)
+
+    content.innerHTML =
+        '<div class="pix-section">' +
+        '<h2 class="modal-title">Pague via Pix</h2>' +
+        '<p class="modal-subtitle">Escaneie o QR Code ou use o copia e cola abaixo.</p>' +
+        '<div class="pix-qr">' + qrImage + '</div>' +
+        '<p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 8px;">Valor: <strong style="color: #FFD700;">R$ ' + total.toFixed(2).replace('.', ',') + '</strong></p>' +
+        '<div class="pix-code" onclick="copyPixCode(this)" title="Clique para copiar">' + (pix.copyPaste || pix.qrCode || '') + '</div>' +
+        '<p class="pix-instructions">' +
+        'Abra o app do seu banco, escolha "Pagar com Pix",<br>' +
+        'escaneie o QR Code ou cole o codigo acima.<br>' +
+        '<strong style="color:#FF1493;">Seus bilhetes sao liberados automaticamente apos o pagamento.</strong>' +
+        '</p>' +
+        '<div class="pix-status pending" id="pixStatus">' +
+        '<div class="spinner"></div>' +
+        'Aguardando pagamento... (confirma automatico)' +
+        '</div>' +
+        '</div>';
+
     startPaymentPolling();
 }
 
-// Modo demo (sem Mercado Pago configurado)
-function showDemoPix(quantity, total, tickets) {
-    
-    const modalEl = document.getElementById('modalContent');
-    
-    const demoData = '00020126580014BR.GOV.BCB.PIX0136' + CONFIG.PIX_KEY + '520400005303986540' + total.toFixed(2) + '5802BR5915' + CONFIG.PIX_NAME + '6009SAO PAULO62070503***6304ABCD';
-    
-    modalEl.innerHTML = '        <div class="pix-section">            <h2 class="modal-title">Pague via Pix</h2>            <p class="modal-subtitle">                <strong>Modo demonstracao</strong><br>                Configure seu Access Token do Mercado Pago em <code>app.js</code> para receber pagamentos reais.            </p>                        <div class="pix-qr">                <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(demoData) + '" alt="QR Code Pix">            </div>                        <div class="pix-code" onclick="copyPixCode(this)" title="Clique para copiar">                ' + demoData + '            </div>                        <p class="pix-instructions">                Abra o app do seu banco, escolha "Pagar com Pix",<br>                escaneie o QR Code ou cole o codigo acima.            </p>                        <div class="pix-status pending" id="pixStatus">                <div class="spinner"></div>                Aguardando pagamento...            </div>                        <button class="btn btn-primary btn-block" style="margin-top: 16px;" id="btnSimulatePayment">                 Simular pagamento confirmado            </button>        </div>';
-    
-    // Store data for the button handler
-    window._demoPaymentData = { quantity: quantity, total: total, tickets: tickets };
-    
-    // Attach click handler directly
-    document.getElementById('btnSimulatePayment').addEventListener('click', function() {
-                confirmPayment(window._demoPaymentData.quantity, window._demoPaymentData.total, window._demoPaymentData.tickets);
-    });
-    
-    }
 
-// Polling para verificar status do pagamento
+// Polling: consulta o backend a cada 4s ate o Pix confirmar (automatico)
 let pollingInterval = null;
 
 function startPaymentPolling() {
     if (pollingInterval) clearInterval(pollingInterval);
-    
+    const purchaseId = window._currentPurchase ? window._currentPurchase.purchaseId : null;
+    if (!purchaseId) return;
+
     pollingInterval = setInterval(async () => {
-        // Aqui voc pode fazer fetch na API do Mercado Pago
-        // para verificar o status do pagamento
-        // Por enquanto, deixamos o usurio confirmar manualmente
-    }, 5000);
+        try {
+            const r = await fetch(CONFIG.API_URL + '/api/check-charge/' + purchaseId);
+            const data = await r.json();
+            if (data.success && (data.status === 'PAID' || data.status === 'RECEIVED' || data.status === 'CONFIRMED')) {
+                stopPaymentPolling();
+                onPaymentConfirmed();
+            } else if (data.success && (data.status === 'CANCELED' || data.status === 'OVERDUE')) {
+                stopPaymentPolling();
+                const st = document.getElementById('pixStatus');
+                if (st) {
+                    st.className = 'pix-status error';
+                    st.innerHTML = 'Pagamento expirado ou cancelado. Tente novamente.';
+                }
+            }
+        } catch (e) {
+            console.error('polling error', e);
+        }
+    }, 4000);
 }
 
-// Confirma pagamento (manual ou automtico)
-function confirmPayment(quantity, total, tickets) {
-    
-    // Marcar bilhetes como vendidos
-    state.soldTickets.push(...tickets);
-    state.myTickets.push(...tickets);
-    saveState();
-        
-    // Atualizar UI
-    updateProgressUI();
-        updateMyTicketsUI();
-        
-    // Mostrar resultado
-    showSuccessModal(tickets, total);
-    
-    // Parar polling
+function stopPaymentPolling() {
     if (pollingInterval) {
         clearInterval(pollingInterval);
         pollingInterval = null;
     }
 }
 
+// Chamado quando o backend confirma que o Pix caiu (liberou os bilhetes)
+function onPaymentConfirmed() {
+    const p = window._currentPurchase;
+    if (!p) return;
+
+    // Atualiza UI local
+    state.myTickets.push(...p.tickets.map(t => parseInt(t)));
+    saveState();
+    updateProgressUI();
+    updateMyTicketsUI();
+
+    // Mostra sucesso
+    showSuccessModal(p.tickets.map(t => parseInt(t)), p.total);
+
+    window._currentPurchase = null;
+}
+
 // Modal de sucesso
 function showSuccessModal(tickets, total) {
         const modalEl = document.getElementById('modalContent');
     
-    // Build ticket chips
+    // Build ticket chips (show max 10, rest as +X)
     let chips = '';
-    for (let i = 0; i < tickets.length; i++) {
+    const maxShow = 10;
+    for (let i = 0; i < Math.min(tickets.length, maxShow); i++) {
         chips += '<span class="ticket-chip">#' + formatTicket(tickets[i]) + '</span>';
+    }
+    if (tickets.length > maxShow) {
+        chips += '<span class="ticket-chip ticket-chip-more">+' + (tickets.length - maxShow) + ' mais</span>';
     }
     
     const totalStr = 'R$ ' + total.toFixed(2).replace('.', ',');
     
     modalEl.innerHTML = '<div class="ticket-result">' +
-        '<div class="ticket-result-icon"></div>' +
+        '<div class="success-celebration">' +
+        '<div class="emoji-row">\uD83C\uDF89\uD83D\uDD25\uD83C\uDF88</div>' +
+        '<h3>Parabens por adquirir seus bilhetes!</h3>' +
+        '<p>Boa sorte no sorteio! \uD83C\uDF89</p>' +
+        '</div>' +
         '<h2 class="ticket-result-title">Compra confirmada!</h2>' +
-        '<p class="ticket-result-subtitle">Seus bilhetes estao garantidos. Boa sorte!</p>' +
+        '<p class="ticket-result-subtitle">Seus bilhetes estao garantidos.</p>' +
         '<div class="tickets-bought">' + chips + '</div>' +
-        '<p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 24px;">Total pago: <strong>' + totalStr + '</strong></p>' +
+        '<p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 8px;">Total pago: <strong>' + totalStr + '</strong></p>' +
+        '<p style="color: #FFD700; font-size: 0.85rem; margin-bottom: 24px;"><a href="#" onclick="openMyTicketsModal(); return false;" style="color: #FFD700;">Ver todos os meus bilhetes</a></p>' +
         '<button class="btn btn-primary btn-block" onclick="closeModal()">Concluir</button>' +
         '</div>';
     
@@ -550,7 +505,10 @@ function maskPhone(input) {
 }
 
 // Abre modal de cadastro
-function openRegisterModal() {
+let registerCallback = null;
+
+function openRegisterModal(callback) {
+    registerCallback = callback || null;
     document.getElementById('registerModal').classList.add('active');
 }
 
@@ -671,10 +629,14 @@ async function searchMyTickets(event) {
 }
 
 // Mostra resultado de meus bilhetes
+// Mostra resultado de meus bilhetes
 function showMyTicketsResult(data) {
     const resultDiv = document.getElementById('myTicketsResult');
     
-    if (data.totalTickets === 0) {
+    // O backend retorna: { success, cpf, tickets: [...] }
+    const tickets = data.tickets || [];
+    
+    if (tickets.length === 0) {
         resultDiv.style.display = 'block';
         resultDiv.innerHTML = `
             <div class="pix-status pending">
@@ -684,31 +646,26 @@ function showMyTicketsResult(data) {
         return;
     }
     
+    // Buscar dados do comprador (se estiver salvo localmente)
+    const buyer = getSavedBuyer();
+    const buyerName = buyer ? buyer.name + ' ' + (buyer.lastName || '') : 'Comprador';
+    
     let html = `
         <div class="my-tickets-result-header">
-            <span class="my-tickets-buyer-name">${data.buyer.name} ${data.buyer.lastName || ''}</span>
-            <span class="my-tickets-count">${data.totalTickets} bilhete${data.totalTickets > 1 ? 's' : ''}</span>
+            <span class="my-tickets-buyer-name">${buyerName}</span>
+            <span class="my-tickets-count">${tickets.length} bilhete${tickets.length > 1 ? 's' : ''}</span>
+        </div>
+        <div class="my-tickets-purchase">
+            <div class="my-tickets-chips">
+                ${tickets.map(t => `<span class="my-tickets-chip">#${t}</span>`).join('')}
+            </div>
         </div>
     `;
-    
-    data.purchases.forEach(purchase => {
-        const date = new Date(purchase.createdAt).toLocaleDateString('pt-BR');
-        html += `
-            <div class="my-tickets-purchase">
-                <div class="my-tickets-purchase-header">
-                    <span class="my-tickets-purchase-date">${date}</span>
-                    <span class="my-tickets-purchase-total">R$ ${purchase.total.toFixed(2).replace('.', ',')}</span>
-                </div>
-                <div class="my-tickets-chips">
-                    ${purchase.tickets.map(t => `<span class="my-tickets-chip">#${t}</span>`).join('')}
-                </div>
-            </div>
-        `;
-    });
     
     resultDiv.style.display = 'block';
     resultDiv.innerHTML = html;
 }
+
 
 // ============================================
    // INICIALIZAO
@@ -717,6 +674,9 @@ document.addEventListener('DOMContentLoaded', () => {
     loadState();
     updateProgressUI();
     updateMyTicketsUI();
+    
+    // Auto-refresh progress every 30 seconds (picks up other people's purchases)
+    setInterval(updateProgressUI, 30000);
     
     // Fechar modal com ESC
     document.addEventListener('keydown', (e) => {
@@ -728,3 +688,94 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.target.id === 'paymentModal') closeModal();
     });
 });
+
+// ============================================
+// LOGIN
+// ============================================
+function openLoginModal() {
+    document.getElementById('loginModal').classList.add('active');
+    document.getElementById('loginCPF').value = '';
+}
+
+function closeLoginModal() {
+    document.getElementById('loginModal').classList.remove('active');
+}
+
+function handleLogin() {
+    var cpf = document.getElementById('loginCPF').value;
+    if (!cpf || cpf.replace(/\D/g, '').length < 11) {
+        showToast('Digite um CPF valido');
+        return;
+    }
+    
+    // Save buyer to localStorage
+    var buyer = { cpf: cpf, name: '', lastName: '', phone: '' };
+    localStorage.setItem('gelinsorteio_buyer', JSON.stringify(buyer));
+    
+    closeLoginModal();
+    
+    // Open my tickets modal with the CPF pre-filled
+    openMyTicketsModal();
+    setTimeout(function() {
+        document.getElementById('searchCPF').value = cpf;
+        searchMyTickets();
+    }, 300);
+    
+    showToast('Logado com sucesso!');
+}
+
+// Close login modal when clicking outside
+document.addEventListener('click', function(e) {
+    var loginModal = document.getElementById('loginModal');
+    if (e.target === loginModal) {
+        closeLoginModal();
+    }
+});
+
+
+// ============================================
+// COMPARTILHAR RIFA
+// ============================================
+function shareRifa() {
+    const shareData = {
+        title: 'Gelin Sorteio',
+        text: 'Participe da rifa Gelin Sorteio! Compre seus bilhetes e concorra a um iPhone 18 Pro Max ou R$ 7.000 no Pix!',
+        url: window.location.href
+    };
+    
+    if (navigator.share) {
+        // Use native share API (mobile)
+        navigator.share(shareData)
+            .then(() => console.log('Compartilhado com sucesso!'))
+            .catch((error) => console.log('Erro ao compartilhar:', error));
+    } else {
+        // Fallback: copy to clipboard (desktop)
+        const textToCopy = `${shareData.text}\n${shareData.url}`;
+        navigator.clipboard.writeText(textToCopy)
+            .then(() => {
+                showShareToast('Link copiado! Compartilhe com seus amigos 📋');
+            })
+            .catch((error) => {
+                // Last resort: window.prompt
+                prompt('Copie o link da rifa:', shareData.url);
+            });
+    }
+}
+
+function showShareToast(message) {
+    // Create toast element
+    let toast = document.getElementById('shareToast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'shareToast';
+        toast.className = 'share-toast';
+        document.body.appendChild(toast);
+    }
+    
+    toast.textContent = message;
+    toast.classList.add('show');
+    
+    setTimeout(() => {
+        toast.classList.remove('show');
+    }, 3000);
+}

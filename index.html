@@ -19,6 +19,7 @@
             </div>
             <nav class="nav">
                 <a href="#como-funciona">Como funciona</a>
+                <a href="#" onclick="openLoginModal(); return false;" class="nav-login" id="btnLogin">Entrar</a>
                 <a href="#" onclick="openMyTicketsModal(); return false;">Meus bilhetes</a>
                 <a href="#comprar" class="nav-cta">Comprar bilhete</a>
             </nav>
@@ -83,6 +84,13 @@
                 </div>
             </div>
             <div class="hero-image">
+                <button class="share-hero-btn" onclick="shareRifa()" title="Compartilhar rifa">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path>
+                        <polyline points="16 6 12 2 8 6"></polyline>
+                        <line x1="12" y1="2" x2="12" y2="15"></line>
+                    </svg>
+                </button>
                 <img src="assets/iphone-hero.png" alt="iPhone 18 Pro Max em 4 cores" class="hero-img">
                 <div class="hero-img-glow"></div>
             </div>
@@ -119,6 +127,8 @@
             </div>
         </div>
     </section>
+    
+    
 
     <!-- COMPRA -->
     <section class="section section-dark" id="comprar">
@@ -127,7 +137,7 @@
             <p class="section-subtitle light">Escolha quantos bilhetes quer e pague via Pix.</p>
             
             <div class="purchase-grid">
-                <!-- R$ 1 ÚNICO -->
+                <!-- R$ 1 ÚNICO (AbacatePay) -->
                 <div class="purchase-card" data-quantity="1">
                     <div class="purchase-header">
                         <span class="purchase-price">R$ 1</span>
@@ -140,6 +150,22 @@
                     </ul>
                     <button class="btn btn-primary btn-block" onclick="buyTickets(1)">
                         Comprar 1 bilhete
+                    </button>
+                </div>
+
+                <!-- LOTE 5 (Asaas) -->
+                <div class="purchase-card" data-quantity="5">
+                    <div class="purchase-header">
+                        <span class="purchase-price">R$ 5</span>
+                        <span class="purchase-label">5 bilhetes</span>
+                    </div>
+                    <ul class="purchase-features">
+                        <li>✓ 5 números aleatórios</li>
+                        <li>✓ Pagamento via Pix</li>
+                        <li>✓ Confirmação instantânea</li>
+                    </ul>
+                    <button class="btn btn-primary btn-block" onclick="buyTickets(5)">
+                        Comprar 5 bilhetes
                     </button>
                 </div>
 
@@ -203,21 +229,33 @@
             </div>
         </div>
     </section>
+    <!-- DESCRICAO E REGULAMENTO -->
+    <section class="section regulamento-section">
+        <div class="container">
+            <div class="regulamento-card">
+                <div class="regulamento-header">
+                    <div class="regulamento-icon">📋</div>
+                    <h2>Descrição e regulamento</h2>
+                </div>
+                <div class="regulamento-body">
+                    <div class="regulamento-item">
+                        <span class="regulamento-check">✅</span>
+                        <p>As cotas são liberadas após o pagamento.</p>
+                    </div>
+                    <div class="regulamento-item">
+                        <span class="regulamento-calendar">📅</span>
+                        <p>A Data do sorteio será divulgado quando obter <strong>100% das cotas</strong> vendidas.</p>
+                    </div>
+                    <p class="regulamento-boasorte">Boa sorte a todos 🍀</p>
+                    <p class="regulamento-sorteio"><strong>Sorteio:</strong> Loteria Federal</p>
+                </div>
+            </div>
+        </div>
+    </section>
 
     <!-- FOOTER -->
-    <footer class="footer">
-        <div class="container footer-inner">
-            <div class="footer-brand">
-                <span class="logo-icon">🧊</span>
-                <span class="logo-text">Gelin <strong>Sorteio</strong></span>
-            </div>
-            <p class="footer-copy">© 2026 Gelin Sorteio. Todos os direitos reservados.</p>
-            <p class="footer-disclaimer">
-                Esta é uma campanha de arrecadação com premiação. 
-                Participe por conta e risco.
-            </p>
-        </div>
-    </footer>
+    
+    
 
     <!-- MODAL PAGAMENTO -->
     <div class="modal-overlay" id="paymentModal">
@@ -299,7 +337,7 @@
     <div class="toast" id="toast"></div>
 
     <!-- BOTÃO DE SUPORTE FLUTUANTE -->
-    <a href="https://wa.me/SEUNUMEROAQUI?text=Olá!%20Tenho%20uma%20dúvida%20sobre%20a%20rifa." 
+    <a href="https://wa.me/5534999964624?text=Olá!%20Tenho%20uma%20dúvida%20sobre%20a%20rifa." 
        class="support-btn" 
        target="_blank" 
        rel="noopener"
@@ -310,5 +348,75 @@
     </a>
 
     <script src="app.js"></script>
-</body>
+
+    
+    
+<!-- LOGIN MODAL -->
+    <div class="modal-overlay" id="loginModal">
+        <div class="modal-box">
+            <button class="modal-close" onclick="closeLoginModal()">&times;</button>
+            <h2>Entrar na sua conta</h2>
+            <p class="modal-subtitle">Digite seu CPF para ver seus bilhetes e o progresso da rifa</p>
+            <div class="form-group">
+                <label for="loginCPF">CPF</label>
+                <input type="text" id="loginCPF" placeholder="000.000.000-00" maxlength="14" oninput="maskCPF(this)">
+            </div>
+            <button class="btn-primary" onclick="handleLogin()">Entrar</button>
+        </div>
+    </div>
+        <!-- REGULAMENTO COMPLETO -->
+    <section class="section regulamento-completo-section">
+        <div class="container">
+            <div class="regulamento-completo-card">
+                <div class="regulamento-completo-header">
+                    <div class="regulamento-completo-icon">📜</div>
+                    <h2>Regulamento</h2>
+                </div>
+                <div class="regulamento-completo-body">
+                    <div class="regulamento-item">
+                        <span class="regulamento-icon-item">📖</span>
+                        <p><strong>Consulta ao Regulamento:</strong> Antes de contratar, é recomendado que o cliente consulte o regulamento completo do produto, disponível no site ou no local de venda.</p>
+                    </div>
+                    
+                    <div class="regulamento-item">
+                        <span class="regulamento-icon-item">🔞</span>
+                        <p><strong>Venda Proibida para Menores de 18 Anos:</strong> A comercialização é proibida para menores de 18 anos, conforme a legislação vigente.</p>
+                    </div>
+                    
+                    <div class="regulamento-item">
+                        <span class="regulamento-icon-item">🎰</span>
+                        <p><strong>Sorteios e Entrega dos Prêmios:</strong> Todos os sorteios e a entrega dos prêmios serão realizados conforme os critérios estabelecidos no regulamento disponível no site.</p>
+                    </div>
+                    
+                    <div class="regulamento-item">
+                        <span class="regulamento-icon-item">🎫</span>
+                        <p><strong>Participação em Múltiplos Sorteios:</strong> O adquirente do título digital participará de todos os sorteios previstos, mesmo que já tenha sido contemplado anteriormente.</p>
+                    </div>
+                    
+                    <div class="regulamento-item">
+                        <span class="regulamento-icon-item">📸</span>
+                        <p><strong>Autorização de Uso de Imagem:</strong> Ao adquirir o título, o titular autoriza, sem custo adicional, o uso de seu nome, voz e imagem para a divulgação da campanha social associada à promoção.</p>
+                    </div>
+                    
+                    <div class="regulamento-item">
+                        <span class="regulamento-icon-item">📱</span>
+                        <p><strong>Comunicação:</strong> Ao adquirir o título, o participante poderá receber ofertas, promoções e avisos relacionados às campanhas, por meio dos canais oficiais de WhatsApp, cujos números serão previamente divulgados para identificação e confirmação de autenticidade.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+    <footer class="footer">
+        <div class="container footer-inner">
+            <div class="footer-brand">
+                <span class="logo-icon">🧊</span>
+                <span class="logo-text">Gelin <strong>Sorteio</strong></span>
+            </div>
+            <p class="footer-copy">© 2026 Gelin Sorteio. Todos os direitos reservados.</p>
+            <p class="footer-disclaimer">
+                Esta é uma campanha de arrecadação com premiação.
+            </p>
+        </div>
+    </footer>
+    </body>
 </html>
