@@ -705,6 +705,25 @@ app.post('/api/admin/cancel', async (req, res) => {
     }
 });
 
+// Exclui TODAS as compras pendentes de uma vez (pra limpar testes)
+app.post('/api/admin/clear-pending', async (req, res) => {
+    try {
+        const { senha } = req.body;
+        if (!senha || senha !== ADMIN_PASSWORD) {
+            return res.status(401).json({ success: false, error: 'Senha incorreta' });
+        }
+        const result = await queryDB(
+            'DELETE FROM purchases WHERE status = $1',
+            ['pending']
+        );
+        const count = result.rowCount || 0;
+        console.log('Admin excluiu pendentes:', count);
+        res.json({ success: true, message: count + ' compra(s) pendente(s) excluída(s). Bilhetes liberados.' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // Confirmação manual de pagamento (QR Code estático do Nubank)
 app.post('/api/confirm-manual', async (req, res) => {
     try {
