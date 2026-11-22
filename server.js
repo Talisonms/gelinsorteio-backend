@@ -374,6 +374,12 @@ app.post('/api/buy', async (req, res) => {
         if (!buyer || !formatCPF(buyer.cpf)) {
             return res.status(400).json({ success: false, error: 'CPF obrigatorio' });
         }
+        
+        // Validar telefone (obrigatorio pro Asaas)
+        const phoneDigits = formatCPF(buyer.phone); // remove nao-digitos
+        if (!phoneDigits || phoneDigits.length < 10) {
+            return res.status(400).json({ success: false, error: 'Dados invalidos. Verifique seu CPF e telefone.' });
+        }
 
         const soldSet = await getSoldTickets();
         const pendingSet = await getPendingTickets();
