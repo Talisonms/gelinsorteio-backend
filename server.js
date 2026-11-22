@@ -332,15 +332,15 @@ app.get('/api/stats', async (req, res) => {
     try {
         const soldSet = await getSoldTickets();
         const pendingSet = await getPendingTickets();
-        // Contar vendidos + pendentes (pra barra de progresso mostrar em tempo real)
-        const totalReserved = soldSet.size + pendingSet.size;
+        // Contar apenas confirmados (vendidos) pra barra de progresso
+        const totalConfirmed = soldSet.size;
         res.json({
             success: true,
             totalTickets: TOTAL_TICKETS,
-            sold: totalReserved,  // Vendidos + Pendentes
-            available: TOTAL_TICKETS - totalReserved,
+            sold: totalConfirmed,  // Apenas confirmados
+            available: TOTAL_TICKETS - totalConfirmed,
             pendingCount: pendingSet.size,
-            percentage: Math.round((totalReserved / TOTAL_TICKETS) * 100)
+            percentage: Math.round((totalConfirmed / TOTAL_TICKETS) * 100)
         });
     } catch (error) {
         console.error('Error getting stats:', error);
