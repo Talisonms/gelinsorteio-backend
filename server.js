@@ -99,16 +99,13 @@ async function initDB() {
 // ============================================
 // ASAAS CONFIG
 // ============================================
-const ASAAS_API_KEY = process.env.ASAAS_API_KEY || '$aact_prod_000MzkwODA2MWY2OGM3MWRlMDU2NWM3MzJlNzZmNGZhZGY6Ojg1ZTI5NmFjLTAyZmMtNGYzZi1hM2Y3LWZiOWIxNWZiODBhNzo6JGFhY2hfMjYyZjhlZjUtMzRhMC00NDhhLWExOTMtMDU2MGE0YmY2NmI3';
-const ABACATE_API_KEY = process.env.ABACATE_API_KEY || 'abc_dev_e0FnGxwgAk1UedtfeGnmHAe2';
+// AbacatePay (processadora atual). A chave fica no Render (env var ABACATE_API_KEY)
+// pra nao vazar no GitHub como aconteceu com a Asaas. O fallback abaixo e' a chave de TESTE.
+const ABACATE_API_KEY = process.env.ABACATE_API_KEY || 'abc_dev_FnW5WhQRNeu5B5TnJsMRGqBH';
 const ABACATE_API_URL = 'https://api.abacatepay.com/v2';
 
 // Painel admin
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'gelin2026';
-
-// Nubank Pix API
-const NUBANK_API_KEY = process.env.NUBANK_API_KEY || '';
-const NUBANK_API_URL = 'https://api.pm.nubank.com.br/api/pix/cobranca/v2';
 
 app.use(cors());
 app.use(express.json());
@@ -225,36 +222,6 @@ async function getTicketsByCPF(cpf) {
 }
 
 // ============================================
-// ASAAS API HELPER
-// ============================================
-function asaasRequest(method, path, body) {
-    return new Promise((resolve, reject) => {
-        const data = body ? JSON.stringify(body) : null;
-        const options = {
-            hostname: 'api.asaas.com',
-            path: path,
-            method: method,
-            headers: { 'access_token': ASAAS_API_KEY, 'Content-Type': 'application/json', 'User-Agent': 'GelinSorteio/1.0' }
-        };
-        if (data) options.headers['Content-Length'] = Buffer.byteLength(data);
-        const req = https.request(options, (res) => {
-            let chunks = [];
-            res.on('data', (c) => chunks.push(c));
-            res.on('end', () => {
-                const text = Buffer.concat(chunks).toString('utf8');
-                let json = null;
-                try { json = text ? JSON.parse(text) : null; } catch (e) { json = text; }
-                if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
-                else { const err = new Error('Asaas error ' + res.statusCode); err.status = res.statusCode; err.body = json; reject(err); }
-            });
-        });
-        req.on('error', reject);
-        if (data) req.write(data);
-        req.end();
-    });
-}
-
-// ============================================
 // ABACATEPAY API HELPER
 // ============================================
 function abacateRequest(method, path, body) {
@@ -284,58 +251,29 @@ function abacateRequest(method, path, body) {
     });
 }
 
-// Cria cobranca Pix no AbacatePay (valor em centavos)
-async function createAbacatePixCharge(quantity, totalCents, description, externalId) {
+// Cria cobranca Pix no AbacatePay (valor em CENTAVOS). externalId = id da compra no nosso banco.
+async function createAbacatePixCharge(totalCents, description, externalId) {
     const body = {
         method: 'PIX',
         data: {
-            amount: totalCents, // em centavos
-            expiresIn: 3600, // 1 hora em segundos
+            amount: totalCents,          // em centavos (R$ 5 = 500)
+            expiresIn: 5 * 60,           // expira em 5 minutos (segundos) - ajusta se a Abacate usar minutos
             description: description,
-            externalId: externalId
+            externalId: externalId       // nosso id da compra -> volta no webhook
         }
     };
     return await abacateRequest('POST', '/v2/transparents/create', body);
 }
 
-// Checa status de uma cobranca no AbacatePay
+// Checa status de uma cobranca no AbacatePay pelo externalId (nosso id da compra)
 async function checkAbacateStatus(externalId) {
-    // Busca o chargeId no cache
-    const chargeId = abacateChargeCache.get(externalId);
-    if (!chargeId) {
-        throw new Error('Charge ID not found in cache');
-    }
-    return await abacateRequest('GET', '/v2/transparents/' + chargeId);
+    return await abacateRequest('GET', '/v2/transparents/check?externalId=' + encodeURIComponent(externalId));
 }
 
-// Cria (ou reusa) cliente no Asaas pelo CPF
-async function getOrCreateAsaasCustomer(buyer) {
-    const cpf = formatCPF(buyer.cpf);
-    try {
-        const list = await asaasRequest('GET', '/v3/customers?cpfCnpj=' + cpf + '&pageSize=1');
-        if (list && list.data && list.data.length > 0) return list.data[0];
-    } catch (e) { /* segue pra criar */ }
-
-    const fullName = ((buyer.name || '') + ' ' + (buyer.lastName || '')).trim() || 'Comprador Gelinsorteio';
-    const cell = formatCPF(buyer.phone);
-    const newCustomer = {
-        name: fullName.substring(0, 100),
-        cpfCnpj: cpf,
-        personType: 'FISICA',
-        email: buyer.email || ('cpf' + cpf + '@gelinsorteio.com')
-    };
-    if (cell) newCustomer.mobilePhone = cell.substring(0, 11);
-    return await asaasRequest('POST', '/v3/customers', newCustomer);
-}
-
-// Busca o QR Code Pix de uma cobranca
-async function getPixQrCode(paymentId) {
-    return await asaasRequest('GET', '/v3/payments/' + paymentId + '/pixQrCode');
-}
 
 // Health check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Gelin Sorteio API', asaas: !!ASAAS_API_KEY, abacate: !!ABACATE_API_KEY, db: !!process.env.DATABASE_URL });
+    res.json({ status: 'ok', message: 'Gelin Sorteio API', abacate: !!ABACATE_API_KEY, db: !!process.env.DATABASE_URL });
 });
 
 // Stats
@@ -397,53 +335,29 @@ app.post('/api/buy', async (req, res) => {
         const selected = available.slice(0, quantity);
         const total = quantity * TICKET_PRICE;
         const totalCents = total * 100; // AbacatePay usa centavos
-        const useNubank = quantity === 1; // 1 bilhete = Nubank, 5+ = Asaas
 
-        let purchaseId, pixData;
+        // Id da compra (nosso banco). O mesmo id vai como externalId na AbacatePay,
+        // entao o webhook e o check-charge conseguem achar a compra.
+        const purchaseId = 'gelin_' + uuidv4();
 
-        if (useNubank) {
-            // ===== NUBANK (1 bilhete) =====
-            const charge = await createNubankPixCharge(quantity, buyer);
-            
-            // O Nubank retorna: { qrcode: { id, copiaECola, qrCodeBase64, ... } }
-            const nbData = charge.qrcode || charge;
-            purchaseId = 'nubank_' + (nbData.id || Date.now());
-            
-            // Salva o chargeId no cache pra consulta posterior
-            if (nbData.id) {
-                abacateChargeCache.set(purchaseId, nbData.id);
-            }
-            
-            pixData = {
-                qrCodeBase64: nbData.qrCodeBase64 || null,
-                copyPaste: nbData.copiaECola || null,
-                expiresAt: nbData.validUntil || null
-            };
-            
-            console.log('Nubank charge created:', JSON.stringify(charge).substring(0, 300));
-        } else {
-            // ===== ASAAS (5+ bilhetes) =====
-            const asaasCustomer = await getOrCreateAsaasCustomer(buyer);
-            
-            const dueDate = new Date(Date.now() + 60 * 60 * 1000).toISOString().slice(0, 10);
-            const chargeBody = {
-                customer: asaasCustomer.id,
-                value: total,
-                dueDate: dueDate,
-                description: ('Gelin Sorteio - ' + quantity + ' bilhetes').substring(0, 100),
-                billingType: 'PIX',
-                pixExpirationInMinutes: 5
-            };
-            const payment = await asaasRequest('POST', '/v3/payments', chargeBody);
-            const qr = await getPixQrCode(payment.id);
-            
-            purchaseId = payment.id;
-            pixData = {
-                qrCodeBase64: qr.encodedImage || null,
-                copyPaste: qr.payload || null,
-                expiresAt: qr.expirationDate || null
-            };
-        }
+        let pixData;
+        // ===== ABACATEPAY (todos os valores) =====
+        const charge = await createAbacatePixCharge(
+            totalCents,
+            ('Gelin Sorteio - ' + quantity + ' bilhete(s)').substring(0, 100),
+            purchaseId
+        );
+        console.log('Abacate charge created:', JSON.stringify(charge).substring(0, 400));
+
+        // A resposta vem no envelope { data: {...}, success, error }.
+        // Os nomes dos campos do QR Code podem variar; lemos os provaveis.
+        const d = (charge && charge.data) ? charge.data : (charge || {});
+        pixData = {
+            qrCodeBase64: d.brCodeBase64 || d.qrCodeBase64 || d.encodedImage || null,
+            copyPaste: d.brCode || d.copiaECola || d.payload || null,
+            expiresAt: d.expiresAt || d.expirationDate || d.validUntil || null,
+            abacateId: d.id || null
+        };
 
         // Guarda como PENDENTE no banco
         const purchase = {
@@ -576,40 +490,17 @@ app.post('/webhook/asaas', async (req, res) => {
 app.get('/api/check-charge/:id', async (req, res) => {
     try {
         const id = req.params.id;
-        
-        // Se começa com 'nubank_', é Nubank
-        if (id.startsWith('nubank_')) {
-            const nubankId = id.replace('nubank_', '');
-            const statusData = await checkNubankChargeStatus(nubankId);
-            const status = statusData.status || statusData.qrcode?.status || 'PENDING';
-            // Nubank statuses: PENDING, PAID, CANCELED, EXPIRED
-            if (status === 'PAID' || status === 'CONFIRMED') {
-                await confirmPurchaseInDB(id);
-            } else if (status === 'CANCELED' || status === 'EXPIRED') {
-                await cancelPurchaseInDB(id);
-            }
-            res.json({ success: true, status: status, provider: 'nubank' });
-        } else if (id.startsWith('gelin_')) {
-            // AbacatePay
-            const statusData = await checkAbacateStatus(id);
-            const status = statusData.status || statusData.data?.status || 'PENDING';
-            if (status === 'PAID' || status === 'CONFIRMED') {
-                await confirmPurchaseInDB(id);
-            } else if (status === 'CANCELED' || status === 'EXPIRED') {
-                await cancelPurchaseInDB(id);
-            }
-            res.json({ success: true, status: status, provider: 'abacate' });
-        } else {
-            // Ã‰ Asaas
-            const payment = await asaasRequest('GET', '/v3/payments/' + id);
-            const status = payment.status; // PENDING, PAID, RECEIVED, OVERDUE, CANCELED
-            if (status === 'PAID' || status === 'RECEIVED' || status === 'CONFIRMED') {
-                await confirmPurchaseInDB(id);
-            } else if (status === 'CANCELED' || status === 'OVERDUE') {
-                await cancelPurchaseInDB(id);
-            }
-            res.json({ success: true, status: status, provider: 'asaas' });
+        // Tudo vai pelo AbacatePay. O id e' o nosso externalId (prefixo gelin_).
+        const statusData = await checkAbacateStatus(id);
+        const d = (statusData && statusData.data) ? statusData.data : (statusData || {});
+        const status = d.status || 'PENDING';
+        // Statuses AbacatePay: PENDING, PAID/COMPLETE, CANCELED, EXPIRED
+        if (status === 'PAID' || status === 'COMPLETE' || status === 'CONFIRMED') {
+            await confirmPurchaseInDB(id);
+        } else if (status === 'CANCELED' || status === 'EXPIRED' || status === 'CANCELLED') {
+            await cancelPurchaseInDB(id);
         }
+        res.json({ success: true, status: status, provider: 'abacate' });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -803,23 +694,34 @@ app.post('/api/confirm-manual', async (req, res) => {
 app.post('/webhook/abacate', async (req, res) => {
     try {
         const event = req.body;
-        const eventType = event.type || event.event || '';
-        const externalId = event.externalId || event.data?.externalId || event.id || null;
-        
-        console.log('Abacate webhook received:', eventType, externalId);
-        
-        if (eventType === 'pix.paid' || eventType === 'payment.paid' || eventType === 'PAID') {
+        // O evento pode vir em event.event, event.type ou event.name
+        const eventType = event.event || event.type || event.name || '';
+        // externalId pode vir no topo ou dentro de event.data
+        const dataObj = event.data || {};
+        const externalId = event.externalId || dataObj.externalId || null;
+
+        // Log COMPLETO da primeira vez pra gente ver o formato real (depois e so resumo)
+        if (!global.__abacateWebhookLogged) {
+            global.__abacateWebhookLogged = true;
+            console.log('ABACATE WEBHOOK (payload completo):', JSON.stringify(event));
+        } else {
+            console.log('Abacate webhook received:', eventType, externalId);
+        }
+
+        // Evento de pagamento confirmado (checkout transparente)
+        if (eventType === 'transparent.completed' || eventType === 'pix.paid' || eventType === 'payment.paid' || eventType === 'PAID' || eventType === 'COMPLETE') {
             if (externalId) {
                 await confirmPurchaseInDB(externalId);
-                console.log('Abacate purchase confirmed:', externalId);
+                console.log('Abacate purchase CONFIRMED:', externalId);
             }
-        } else if (eventType === 'pix.canceled' || eventType === 'payment.canceled' || eventType === 'CANCELED' || eventType === 'EXPIRED') {
+        } else if (eventType === 'transparent.refunded' || eventType === 'transparent.disputed' || eventType === 'pix.canceled' || eventType === 'payment.canceled' || eventType === 'CANCELED' || eventType === 'CANCELLED' || eventType === 'EXPIRED') {
             if (externalId) {
                 await cancelPurchaseInDB(externalId);
-                console.log('Abacate purchase canceled:', externalId);
+                console.log('Abacate purchase CANCELED:', externalId);
             }
         }
-        
+
+        // Responder 2xx rapido (a AbacatePay considera 2xx como entrega ok)
         res.json({ success: true });
     } catch (err) {
         console.error('Abacate webhook error:', err);
@@ -906,10 +808,9 @@ app.post('/api/admin/add-purchase', async (req, res) => {
 initDB().then(() => {
     app.listen(PORT, () => {
         console.log('Backend Gelinsorteio rodando na porta ' + PORT);
-        console.log('Asaas configurado:', !!ASAAS_API_KEY);
         console.log('AbacatePay configurado:', !!ABACATE_API_KEY);
         console.log('Database configurado:', !!process.env.DATABASE_URL);
-        console.log('Webhook: POST http://localhost:' + PORT + '/webhook/asaas');
+        console.log('Webhook: POST https://gelinsorteio-backend-v2.onrender.com/webhook/abacate');
     });
 }).catch(err => {
     console.error('Failed to initialize DB:', err);
