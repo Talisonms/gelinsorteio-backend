@@ -90,6 +90,10 @@ async function initDB() {
             CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status);
             CREATE INDEX IF NOT EXISTS idx_purchases_buyer_cpf ON purchases(buyer_cpf);
         `);
+        // Garante a coluna abacate_id (id da cobranca na AbacatePay) - adiciona se nao existir
+        try {
+            await queryDB('ALTER TABLE purchases ADD COLUMN IF NOT EXISTS abacate_id TEXT');
+        } catch (e) { /* ja existe */ }
         console.log('Database tables initialized');
     } catch (err) {
         console.error('Error initializing DB:', err);
@@ -144,17 +148,17 @@ async function getPendingTickets() {
 
 // Create a purchase in the database
 async function createPurchase(purchase) {
-    // Tenta inserir com buyer_phone, se falhar (coluna não existe), insere sem
+    // Tenta inserir com buyer_phone + abacate_id; se falhar, cai no fallback
     try {
+        await queryDB(
+            'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, buyer_phone, abacate_id, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+            [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.buyerPhone || '', purchase.abacateId || null, purchase.status, new Date()]
+        );
+    } catch (e) {
+        // Fallback: sem abacate_id (coluna pode nao existir em banco antigo)
         await queryDB(
             'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, buyer_phone, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
             [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.buyerPhone || '', purchase.status, new Date()]
-        );
-    } catch (e) {
-        // Fallback: coluna buyer_phone não existe ainda
-        await queryDB(
-            'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-            [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.status, new Date()]
         );
     }
 }
@@ -265,9 +269,10 @@ async function createAbacatePixCharge(totalCents, description, externalId) {
     return await abacateRequest('POST', '/v2/transparents/create', body);
 }
 
-// Checa status de uma cobranca no AbacatePay pelo externalId (nosso id da compra)
-async function checkAbacateStatus(externalId) {
-    return await abacateRequest('GET', '/v2/transparents/check?externalId=' + encodeURIComponent(externalId));
+// Checa status de uma cobranca no AbacatePay.
+// O endpoint /transparents/check exige o id da AbacatePay (pix_char_...), nao o nosso externalId.
+async function checkAbacateStatus(abacateId) {
+    return await abacateRequest('GET', '/v2/transparents/check?id=' + encodeURIComponent(abacateId));
 }
 
 
@@ -368,6 +373,7 @@ app.post('/api/buy', async (req, res) => {
             buyerCpf: formatCPF(buyer.cpf),
             buyerName: ((buyer.name || '') + ' ' + (buyer.lastName || '')).trim(),
             buyerPhone: buyer.phone || '',
+            abacateId: pixData.abacateId || null,
             status: 'pending',
             createdAt: new Date().toISOString()
         };
@@ -376,7 +382,7 @@ app.post('/api/buy', async (req, res) => {
         res.json({
             success: true,
             purchaseId: purchaseId,
-            provider: 'asaas',
+            provider: 'abacate',
             tickets: selected,
             total: total,
             pix: pixData
@@ -489,15 +495,23 @@ app.post('/webhook/asaas', async (req, res) => {
 // Fallback: frontend consulta status direto no Asaas ou AbacatePay
 app.get('/api/check-charge/:id', async (req, res) => {
     try {
-        const id = req.params.id;
-        // Tudo vai pelo AbacatePay. O id e' o nosso externalId (prefixo gelin_).
-        const statusData = await checkAbacateStatus(id);
+        const id = req.params.id; // nosso id da compra (gelin_...)
+        // O endpoint check da AbacatePay exige o id dela (pix_char_...).
+        // Buscamos esse id no banco (coluna abacate_id) pelo nosso id.
+        const row = await queryDB('SELECT abacate_id FROM purchases WHERE id = $1', [id]);
+        let abacateId = row.rows.length ? row.rows[0].abacate_id : null;
+        // Fallback: cache em memoria (caso a coluna ainda nao tenha sido populada)
+        if (!abacateId) abacateId = abacateChargeCache.get(id) || null;
+        if (!abacateId) {
+            return res.json({ success: true, status: 'PENDING', provider: 'abacate', note: 'abacate_id nao encontrado' });
+        }
+        const statusData = await checkAbacateStatus(abacateId);
         const d = (statusData && statusData.data) ? statusData.data : (statusData || {});
         const status = d.status || 'PENDING';
-        // Statuses AbacatePay: PENDING, PAID/COMPLETE, CANCELED, EXPIRED
-        if (status === 'PAID' || status === 'COMPLETE' || status === 'CONFIRMED') {
+        // Statuses AbacatePay: PENDING, PAID, EXPIRED, CANCELLED, REFUNDED, UNDER_DISPUTE...
+        if (status === 'PAID' || status === 'REDEEMED' || status === 'APPROVED') {
             await confirmPurchaseInDB(id);
-        } else if (status === 'CANCELED' || status === 'EXPIRED' || status === 'CANCELLED') {
+        } else if (status === 'EXPIRED' || status === 'CANCELLED' || status === 'REFUNDED' || status === 'FAILED') {
             await cancelPurchaseInDB(id);
         }
         res.json({ success: true, status: status, provider: 'abacate' });
