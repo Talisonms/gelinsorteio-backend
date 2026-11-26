@@ -317,7 +317,7 @@ async function createPixPayment(quantity, total, tickets) {
         };
 
         // Mostra QR Code real do Asaas
-        showAsaasPix(data.pix, data.total, data.tickets);
+        showEfiPix(data.pix, data.total, data.tickets);
 
     } catch (error) {
         console.error('Error creating pix:', error);
@@ -330,28 +330,22 @@ async function createPixPayment(quantity, total, tickets) {
 }
 
 // Mostra QR Code do Asaas e inicia confirmacao automatica
-function showAsaasPix(pix, total, tickets) {
+function showEfiPix(pix, total, tickets) {
     const content = document.getElementById('modalContent');
-
-    let qrImage = '';
-    if (pix.qrCodeBase64) {
-        qrImage = '<img src="data:image/png;base64,' + pix.qrCodeBase64 + '" alt="QR Code Pix">';
-    } else if (pix.copyPaste || pix.qrCode) {
-        qrImage = '<img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(pix.copyPaste || pix.qrCode) + '" alt="QR Code Pix">';
-    } else {
-        qrImage = '<p style="color: var(--text-secondary);">QR Code indisponivel. Use o copia e cola abaixo.</p>';
-    }
+    const code = pix.copiaEcola || pix.copyPaste || pix.qrCode || '';
+    const totalStr = 'R$ ' + total.toFixed(2).replace('.', ',');
 
     content.innerHTML =
         '<div class="pix-section">' +
         '<h2 class="modal-title">Pague via Pix</h2>' +
-        '<p class="modal-subtitle">Escaneie o QR Code ou use o copia e cola abaixo.</p>' +
-        '<div class="pix-qr">' + qrImage + '</div>' +
-        '<p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 8px;">Valor: <strong style="color: #FFD700;">R$ ' + total.toFixed(2).replace('.', ',') + '</strong></p>' +
-        '<div class="pix-code" onclick="copyPixCode(this)" title="Clique para copiar">' + (pix.copyPaste || pix.qrCode || '') + '</div>' +
+        '<p class="modal-subtitle">Copie o codigo abaixo e cole no app do seu banco.</p>' +
+        '<p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 8px;">Valor: <strong style="color: #FFD700;">' + totalStr + '</strong></p>' +
+        '<textarea id="pix-copia-cola" readonly class="pix-code" rows="4">' + code + '</textarea>' +
+        '<button class="btn btn-primary btn-block" style="margin-top: 12px;" onclick="copyPixCode()">Copiar codigo</button>' +
         '<p class="pix-instructions">' +
         'Abra o app do seu banco, escolha "Pagar com Pix",<br>' +
-        'escaneie o QR Code ou cole o codigo acima.<br>' +
+        'cole o codigo acima e confirme.<br>' +
+        'O codigo expira em 30 minutos.<br>' +
         '<strong style="color:#FF1493;">Seus bilhetes sao liberados automaticamente apos o pagamento.</strong>' +
         '</p>' +
         '<div class="pix-status pending" id="pixStatus">' +
@@ -362,7 +356,6 @@ function showAsaasPix(pix, total, tickets) {
 
     startPaymentPolling();
 }
-
 
 // Polling: consulta o backend a cada 4s ate o Pix confirmar (automatico)
 let pollingInterval = null;
@@ -376,10 +369,10 @@ function startPaymentPolling() {
         try {
             const r = await fetch(CONFIG.API_URL + '/api/check-charge/' + purchaseId);
             const data = await r.json();
-            if (data.success && (data.status === 'PAID' || data.status === 'RECEIVED' || data.status === 'CONFIRMED')) {
+            if (data.success && (data.status === 'PAGA' || data.status === 'PAID' || data.status === 'RECEIVED' || data.status === 'CONFIRMED')) {
                 stopPaymentPolling();
                 onPaymentConfirmed();
-            } else if (data.success && (data.status === 'CANCELED' || data.status === 'OVERDUE')) {
+            } else if (data.success && (data.status === 'CANCELADA' || data.status === 'EXPIRADA' || data.status === 'CANCELED' || data.status === 'OVERDUE')) {
                 stopPaymentPolling();
                 const st = document.getElementById('pixStatus');
                 if (st) {
@@ -449,21 +442,35 @@ function showSuccessModal(tickets, total) {
     
     }
 
-// Copiar cdigo Pix
-function copyPixCode(element) {
-    const text = element.textContent.trim();
-    navigator.clipboard.writeText(text).then(() => {
-        showToast(' Cdigo copiado!', 'success');
-    }).catch(() => {
-        // Fallback
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        document.body.appendChild(textarea);
-        textarea.select();
+// Copiar codigo Pix
+function copyPixCode() {
+    const el = document.getElementById('pix-copia-cola');
+    const text = el ? el.value.trim() : '';
+    if (!text) { showToast('Nenhum codigo para copiar', 'error'); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+            showToast('Codigo copiado!', 'success');
+        }).catch(() => fallbackCopy(text));
+    } else {
+        fallbackCopy(text);
+    }
+}
+
+function fallbackCopy(text) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
         document.execCommand('copy');
-        document.body.removeChild(textarea);
-        showToast(' Cdigo copiado!', 'success');
-    });
+        showToast('Codigo copiado!', 'success');
+    } catch (e) {
+        showToast('Selecione o codigo e copie manualmente', 'error');
+    }
+    document.body.removeChild(textarea);
 }
 
 // ============================================
