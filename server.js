@@ -117,7 +117,8 @@ let efiAgent = null;
 if (EFI_CERT_BASE64) {
     try {
         const pfx = Buffer.from(EFI_CERT_BASE64, 'base64');
-        efiAgent = new https.Agent({ pfx: pfx, passphrase: EFI_CERT_PASSPHRASE || undefined });
+        const _pp = (EFI_CERT_PASSPHRASE || '').trim();
+efiAgent = new https.Agent({ pfx: pfx, passphrase: _pp ? _pp : undefined });
         console.log('Agente mTLS Efi criado com sucesso');
     } catch (e) {
         console.error('ERRO ao criar agente mTLS Efi:', e.message);
