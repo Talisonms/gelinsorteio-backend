@@ -9,7 +9,6 @@ function base64_encode(str) {
 }
 
 // Cache em memória: externalId -> chargeId (AbacatePay)
-const abacateChargeCache = new Map();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -90,9 +89,9 @@ async function initDB() {
             CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status);
             CREATE INDEX IF NOT EXISTS idx_purchases_buyer_cpf ON purchases(buyer_cpf);
         `);
-        // Garante a coluna abacate_id (id da cobranca na AbacatePay) - adiciona se nao existir
+        // Garante a coluna efi_txid (txid da cobranca na API Pix Efi) - adiciona se nao existir
         try {
-            await queryDB('ALTER TABLE purchases ADD COLUMN IF NOT EXISTS abacate_id TEXT');
+            await queryDB('ALTER TABLE purchases ADD COLUMN IF NOT EXISTS efi_txid TEXT');
         } catch (e) { /* ja existe */ }
         console.log('Database tables initialized');
     } catch (err) {
@@ -101,12 +100,94 @@ async function initDB() {
 }
 
 // ============================================
-// ASAAS CONFIG
+// API PIX EFI (processadora atual)
 // ============================================
-// AbacatePay (processadora atual). A chave fica no Render (env var ABACATE_API_KEY)
-// pra nao vazar no GitHub como aconteceu com a Asaas. O fallback abaixo e' a chave de TESTE.
-const ABACATE_API_KEY = process.env.ABACATE_API_KEY || 'abc_dev_FnW5WhQRNeu5B5TnJsMRGqBH';
-const ABACATE_API_URL = 'https://api.abacatepay.com/v2';
+// Credenciais ficam no Render (env vars) pra nao vazar no GitHub.
+// mTLS: certificado .p12 em base64 (EFI_CERT_BASE64) + senha (EFI_CERT_PASSPHRASE, pode ser vazia).
+const EFI_ENV = process.env.EFI_ENV || 'production';
+const EFI_HOSTNAME = EFI_ENV === 'production' ? 'pix.api.efipay.com.br' : 'pix-h.api.efipay.com.br';
+const EFI_CLIENT_ID = process.env.EFI_CLIENT_ID || '';
+const EFI_CLIENT_SECRET = process.env.EFI_CLIENT_SECRET || '';
+const EFI_CHAVE_PIX = process.env.EFI_CHAVE_PIX || '';
+const EFI_CERT_BASE64 = process.env.EFI_CERT_BASE64 || '';
+const EFI_CERT_PASSPHRASE = process.env.EFI_CERT_PASSPHRASE || '';
+
+// Agent mTLS: usa o certificado .p12 do integrador em todas as chamadas a Efi.
+let efiAgent = null;
+if (EFI_CERT_BASE64) {
+    try {
+        const pfx = Buffer.from(EFI_CERT_BASE64, 'base64');
+        efiAgent = new https.Agent({ pfx: pfx, passphrase: EFI_CERT_PASSPHRASE || undefined });
+        console.log('Agente mTLS Efi criado com sucesso');
+    } catch (e) {
+        console.error('ERRO ao criar agente mTLS Efi:', e.message);
+    }
+} else {
+    console.warn('EFI_CERT_BASE64 ausente - chamadas a Efi sem mTLS vao falhar');
+}
+
+// Cache do token OAuth2 (expira em 1h; renova com margem de 5 min)
+let efiToken = null;
+let efiTokenExpiresAt = 0;
+
+function efiRequest(method, path, body, headers) {
+    return new Promise((resolve, reject) => {
+        const data = body ? JSON.stringify(body) : null;
+        const opts = {
+            hostname: EFI_HOSTNAME,
+            path: path,
+            method: method,
+            agent: efiAgent,
+            headers: Object.assign({ 'Content-Type': 'application/json', 'User-Agent': 'gelinsorteio/1.0' }, headers || {})
+        };
+        if (data) opts.headers['Content-Length'] = Buffer.byteLength(data);
+        const req = https.request(opts, (res) => {
+            let chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                const text = Buffer.concat(chunks).toString('utf8');
+                let json = null;
+                try { json = text ? JSON.parse(text) : null; } catch (e) { json = text; }
+                if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
+                else { const err = new Error('Efi error ' + res.statusCode); err.status = res.statusCode; err.body = json; reject(err); }
+            });
+        });
+        req.on('error', reject);
+        if (data) req.write(data);
+        req.end();
+    });
+}
+
+// Obtem (ou reutiliza) o access_token via OAuth2 client_credentials + Basic Auth.
+async function getEfiToken() {
+    if (efiToken && Date.now() < efiTokenExpiresAt) return efiToken;
+    const basic = base64_encode(EFI_CLIENT_ID + ':' + EFI_CLIENT_SECRET);
+    const tok = await efiRequest('POST', '/oauth/token',
+        { grant_type: 'client_credentials' },
+        { 'Authorization': 'Basic ' + basic });
+    efiToken = tok.access_token;
+    efiTokenExpiresAt = Date.now() + ((tok.expires_in || 3600) - 300) * 1000;
+    return efiToken;
+}
+
+// Cria cobranca Pix na Efi. txid: 26-35 chars alfanumericos (SEM underline).
+// valor.original vai como STRING ("1.00"). chave = chave Pix da conta recebedora.
+async function createEfiPixCharge(txid, valorOriginal, cpf, nome) {
+    const token = await getEfiToken();
+    return await efiRequest('PUT', '/v2/cob/' + txid, {
+        chave: EFI_CHAVE_PIX,
+        calendario: { expiracao: 1800 },   // expira em 30 minutos
+        devedor: { cpf: cpf, nome: nome },
+        valor: { original: valorOriginal }
+    }, { 'Authorization': 'Bearer ' + token });
+}
+
+// Consulta status de uma cobranca na Efi (fonte da verdade).
+async function checkEfiStatus(txid) {
+    const token = await getEfiToken();
+    return await efiRequest('GET', '/v2/cob/' + txid, null,
+        { 'Authorization': 'Bearer ' + token });
+}
 
 // Painel admin
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'gelin2026';
@@ -148,14 +229,14 @@ async function getPendingTickets() {
 
 // Create a purchase in the database
 async function createPurchase(purchase) {
-    // Tenta inserir com buyer_phone + abacate_id; se falhar, cai no fallback
+    // Tenta inserir com buyer_phone + efi_txid; se falhar, cai no fallback
     try {
         await queryDB(
-            'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, buyer_phone, abacate_id, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
-            [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.buyerPhone || '', purchase.abacateId || null, purchase.status, new Date()]
+            'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, buyer_phone, efi_txid, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+            [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.buyerPhone || '', purchase.efiTxid || null, purchase.status, new Date()]
         );
     } catch (e) {
-        // Fallback: sem abacate_id (coluna pode nao existir em banco antigo)
+        // Fallback: sem efi_txid (coluna pode nao existir em banco antigo)
         await queryDB(
             'INSERT INTO purchases (id, tickets, quantity, total, buyer_cpf, buyer_name, buyer_phone, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
             [purchase.id, JSON.stringify(purchase.tickets), purchase.quantity, purchase.total, purchase.buyerCpf, purchase.buyerName, purchase.buyerPhone || '', purchase.status, new Date()]
@@ -225,60 +306,16 @@ async function getTicketsByCPF(cpf) {
     return tickets;
 }
 
-// ============================================
-// ABACATEPAY API HELPER
-// ============================================
-function abacateRequest(method, path, body) {
-    return new Promise((resolve, reject) => {
-        const data = body ? JSON.stringify(body) : null;
-        const options = {
-            hostname: 'api.abacatepay.com',
-            path: path,
-            method: method,
-            headers: { 'Authorization': 'Bearer ' + ABACATE_API_KEY, 'Content-Type': 'application/json' }
-        };
-        if (data) options.headers['Content-Length'] = Buffer.byteLength(data);
-        const req = https.request(options, (res) => {
-            let chunks = [];
-            res.on('data', (c) => chunks.push(c));
-            res.on('end', () => {
-                const text = Buffer.concat(chunks).toString('utf8');
-                let json = null;
-                try { json = text ? JSON.parse(text) : null; } catch (e) { json = text; }
-                if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
-                else { const err = new Error('Abacate error ' + res.statusCode); err.status = res.statusCode; err.body = json; reject(err); }
-            });
-        });
-        req.on('error', reject);
-        if (data) req.write(data);
-        req.end();
-    });
-}
-
-// Cria cobranca Pix no AbacatePay (valor em CENTAVOS). externalId = id da compra no nosso banco.
-async function createAbacatePixCharge(totalCents, description, externalId) {
-    const body = {
-        method: 'PIX',
-        data: {
-            amount: totalCents,          // em centavos (R$ 5 = 500)
-            expiresIn: 5 * 60,           // expira em 5 minutos (segundos) - ajusta se a Abacate usar minutos
-            description: description,
-            externalId: externalId       // nosso id da compra -> volta no webhook
-        }
-    };
-    return await abacateRequest('POST', '/v2/transparents/create', body);
-}
-
-// Checa status de uma cobranca no AbacatePay.
-// O endpoint /transparents/check exige o id da AbacatePay (pix_char_...), nao o nosso externalId.
-async function checkAbacateStatus(abacateId) {
-    return await abacateRequest('GET', '/v2/transparents/check?id=' + encodeURIComponent(abacateId));
-}
-
-
 // Health check
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Gelin Sorteio API', abacate: !!ABACATE_API_KEY, db: !!process.env.DATABASE_URL });
+app.get('/api/health', async (req, res) => {
+    let efiOk = false;
+    try {
+        await getEfiToken();
+        efiOk = true;
+    } catch (e) {
+        console.error('Health: token Efi falhou:', e.message);
+    }
+    res.json({ status: 'ok', message: 'Gelin Sorteio API', efi: efiOk, env: EFI_ENV, db: !!process.env.DATABASE_URL });
 });
 
 // Stats
@@ -307,19 +344,20 @@ app.get('/api/stats', async (req, res) => {
 // ============================================
 app.post('/api/buy', async (req, res) => {
     try {
-        const { quantity, buyer } = req.body;
-        
-        // Usar Asaas
+        const { quantity, buyer, buyerCpf } = req.body;
+        // Aceita os dois formatos do front: { buyer: {...} } ou { buyerCpf: '...' }
+        const b = buyer || {};
+        const cpfRaw = b.cpf || buyerCpf || '';
 
         if (!quantity || quantity < MIN_TICKETS || quantity > 100) {
             return res.status(400).json({ success: false, error: 'Minimo ' + MIN_TICKETS + ' bilhete(s)' });
         }
-        if (!buyer || !formatCPF(buyer.cpf)) {
+        if (!formatCPF(cpfRaw)) {
             return res.status(400).json({ success: false, error: 'CPF obrigatorio' });
         }
-        
-        // Validar telefone (obrigatorio pro Asaas)
-        const phoneDigits = formatCPF(buyer.phone); // remove nao-digitos
+
+        // Validar telefone (obrigatorio pro contato)
+        const phoneDigits = formatCPF(b.phone); // remove nao-digitos
         if (!phoneDigits || phoneDigits.length < 10) {
             return res.status(400).json({ success: false, error: 'Dados invalidos. Verifique seu CPF e telefone.' });
         }
@@ -339,29 +377,22 @@ app.post('/api/buy', async (req, res) => {
         }
         const selected = available.slice(0, quantity);
         const total = quantity * TICKET_PRICE;
-        const totalCents = total * 100; // AbacatePay usa centavos
 
-        // Id da compra (nosso banco). O mesmo id vai como externalId na AbacatePay,
-        // entao o webhook e o check-charge conseguem achar a compra.
+        // Id da compra (nosso banco). O txid da Efi e derivado dele (32 chars alfanumericos,
+        // sem underline - a Efi exige o padrao ^[a-zA-Z0-9]{26,35}$).
         const purchaseId = 'gelin_' + uuidv4();
+        const txid = uuidv4().replace(/-/g, '').slice(0, 32);
 
-        let pixData;
-        // ===== ABACATEPAY (todos os valores) =====
-        const charge = await createAbacatePixCharge(
-            totalCents,
-            ('Gelin Sorteio - ' + quantity + ' bilhete(s)').substring(0, 100),
-            purchaseId
-        );
-        console.log('Abacate charge created:', JSON.stringify(charge).substring(0, 400));
+        // ===== API PIX EFI =====
+        const cpf = formatCPF(cpfRaw);
+        const nome = (((b.name || '') + ' ' + (b.lastName || '')).trim().toUpperCase() || 'COMPRADOR GELIN SORTEIO').substring(0, 140);
+        const charge = await createEfiPixCharge(txid, total.toFixed(2), cpf, nome);
+        console.log('Efi charge created:', JSON.stringify(charge).substring(0, 400));
 
-        // A resposta vem no envelope { data: {...}, success, error }.
-        // Os nomes dos campos do QR Code podem variar; lemos os provaveis.
-        const d = (charge && charge.data) ? charge.data : (charge || {});
-        pixData = {
-            qrCodeBase64: d.brCodeBase64 || d.qrCodeBase64 || d.encodedImage || null,
-            copyPaste: d.brCode || d.copiaECola || d.payload || null,
-            expiresAt: d.expiresAt || d.expirationDate || d.validUntil || null,
-            abacateId: d.id || null
+        const pixData = {
+            copiaEcola: charge.pixCopiaECola || null,
+            txid: charge.txid || txid,
+            expiraEm: 1800
         };
 
         // Guarda como PENDENTE no banco
@@ -370,10 +401,10 @@ app.post('/api/buy', async (req, res) => {
             tickets: selected,
             quantity: quantity,
             total: total,
-            buyerCpf: formatCPF(buyer.cpf),
-            buyerName: ((buyer.name || '') + ' ' + (buyer.lastName || '')).trim(),
-            buyerPhone: buyer.phone || '',
-            abacateId: pixData.abacateId || null,
+            buyerCpf: cpf,
+            buyerName: ((b.name || '') + ' ' + (b.lastName || '')).trim(),
+            buyerPhone: b.phone || '',
+            efiTxid: pixData.txid,
             status: 'pending',
             createdAt: new Date().toISOString()
         };
@@ -382,18 +413,17 @@ app.post('/api/buy', async (req, res) => {
         res.json({
             success: true,
             purchaseId: purchaseId,
-            provider: 'abacate',
+            provider: 'efi',
             tickets: selected,
             total: total,
             pix: pixData
         });
     } catch (error) {
         console.error('Error buying:', error);
-        if (error.status === 404) {
+        if (error.status === 401) {
             return res.status(503).json({ success: false, error: 'PIX_INDISPONIVEL' });
         }
-        // Se for erro do Asaas (400), mostrar mensagem clara
-        if (error.message && error.message.includes('Asaas error 400')) {
+        if (error.body && error.body.nome === 'json_invalido') {
             return res.status(400).json({ success: false, error: 'Dados invalidos. Verifique seu CPF e telefone.' });
         }
         res.status(500).json({ success: false, error: 'Erro ao criar pagamento: ' + (error.message || '') });
@@ -464,58 +494,27 @@ app.post('/api/reset', async (req, res) => {
     }
 });
 
-// Webhook handler
-app.post('/webhook/asaas', async (req, res) => {
-    try {
-        const event = req.body;
-        const eventType = event.type || event.event;
-        const chargeId = event.data && event.data.id ? event.data.id : (event.id || null);
-
-        console.log('Webhook received:', eventType, chargeId);
-
-        if (eventType === 'PAYMENT_CONFIRMED' || eventType === 'PAYMENT_RECEIVED' || eventType === 'paymentPaid' || eventType === 'chargePaid' || eventType === 'chargePaidPix') {
-            if (chargeId) {
-                await confirmPurchaseInDB(chargeId);
-                console.log('Purchase confirmed:', chargeId);
-            }
-        } else if (eventType === 'PAYMENT_OVERDUE' || eventType === 'PAYMENT_DELETED' || eventType === 'paymentCanceled' || eventType === 'chargeCanceled' || eventType === 'chargeExpired') {
-            if (chargeId) {
-                await cancelPurchaseInDB(chargeId);
-                console.log('Purchase canceled:', chargeId);
-            }
-        }
-
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Webhook error:', err);
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-// Fallback: frontend consulta status direto no Asaas ou AbacatePay
+// Consulta status da cobranca na Efi (fonte da verdade).
+// O front chama esse endpoint de tempos em tempos enquanto o comprador paga.
 app.get('/api/check-charge/:id', async (req, res) => {
     try {
         const id = req.params.id; // nosso id da compra (gelin_...)
-        // O endpoint check da AbacatePay exige o id dela (pix_char_...).
-        // Buscamos esse id no banco (coluna abacate_id) pelo nosso id.
-        const row = await queryDB('SELECT abacate_id FROM purchases WHERE id = $1', [id]);
-        let abacateId = row.rows.length ? row.rows[0].abacate_id : null;
-        // Fallback: cache em memoria (caso a coluna ainda nao tenha sido populada)
-        if (!abacateId) abacateId = abacateChargeCache.get(id) || null;
-        if (!abacateId) {
-            return res.json({ success: true, status: 'PENDING', provider: 'abacate', note: 'abacate_id nao encontrado' });
+        const row = await queryDB('SELECT efi_txid FROM purchases WHERE id = $1', [id]);
+        const txid = row.rows.length ? row.rows[0].efi_txid : null;
+        if (!txid) {
+            return res.json({ success: true, status: 'PENDING', provider: 'efi', note: 'efi_txid nao encontrado' });
         }
-        const statusData = await checkAbacateStatus(abacateId);
-        const d = (statusData && statusData.data) ? statusData.data : (statusData || {});
-        const status = d.status || 'PENDING';
-        // Statuses AbacatePay: PENDING, PAID, EXPIRED, CANCELLED, REFUNDED, UNDER_DISPUTE...
-        if (status === 'PAID' || status === 'REDEEMED' || status === 'APPROVED') {
+        const statusData = await checkEfiStatus(txid);
+        const status = statusData.status || 'ATIVA';
+        // Statuses Efi: ATIVA, PAGA, EXPIRADA, CANCELADA, REEMBOLSADA
+        if (status === 'PAGA') {
             await confirmPurchaseInDB(id);
-        } else if (status === 'EXPIRED' || status === 'CANCELLED' || status === 'REFUNDED' || status === 'FAILED') {
+        } else if (status === 'EXPIRADA' || status === 'CANCELADA' || status === 'REEMBOLSADA') {
             await cancelPurchaseInDB(id);
         }
-        res.json({ success: true, status: status, provider: 'abacate' });
+        res.json({ success: true, status: status, provider: 'efi' });
     } catch (error) {
+        console.error('check-charge error:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -704,41 +703,42 @@ app.post('/api/confirm-manual', async (req, res) => {
     }
 });
 
-// Webhook AbacatePay
-app.post('/webhook/abacate', async (req, res) => {
+// Webhook Efi (POST /webhook/efi)
+// A Efi envia notificacoes de status aqui. No Render Free o webhook mTLS pode nao chegar,
+// entao a confirmacao real vem da consulta ativa (/api/check-charge). Este handler e backup.
+app.post('/webhook/efi', async (req, res) => {
     try {
         const event = req.body;
-        // O evento pode vir em event.event, event.type ou event.name
-        const eventType = event.event || event.type || event.name || '';
-        // externalId pode vir no topo ou dentro de event.data
-        const dataObj = event.data || {};
-        const externalId = event.externalId || dataObj.externalId || null;
-
-        // Log COMPLETO da primeira vez pra gente ver o formato real (depois e so resumo)
-        if (!global.__abacateWebhookLogged) {
-            global.__abacateWebhookLogged = true;
-            console.log('ABACATE WEBHOOK (payload completo):', JSON.stringify(event));
+        // Log COMPLETO da primeira notificacao pra ver o formato real
+        if (!global.__efiWebhookLogged) {
+            global.__efiWebhookLogged = true;
+            console.log('EFI WEBHOOK (payload completo):', JSON.stringify(event));
         } else {
-            console.log('Abacate webhook received:', eventType, externalId);
+            console.log('Efi webhook received:', JSON.stringify(event).substring(0, 200));
         }
 
-        // Evento de pagamento confirmado (checkout transparente)
-        if (eventType === 'transparent.completed' || eventType === 'pix.paid' || eventType === 'payment.paid' || eventType === 'PAID' || eventType === 'COMPLETE') {
-            if (externalId) {
-                await confirmPurchaseInDB(externalId);
-                console.log('Abacate purchase CONFIRMED:', externalId);
-            }
-        } else if (eventType === 'transparent.refunded' || eventType === 'transparent.disputed' || eventType === 'pix.canceled' || eventType === 'payment.canceled' || eventType === 'CANCELED' || eventType === 'CANCELLED' || eventType === 'EXPIRED') {
-            if (externalId) {
-                await cancelPurchaseInDB(externalId);
-                console.log('Abacate purchase CANCELED:', externalId);
+        // O txid pode vir no topo ou em campos aninhados - procuramos nos lugares provaveis
+        const txid = event.txid || (event.data && event.data.txid) || null;
+        const status = event.status || (event.data && event.data.status) || '';
+
+        if (txid) {
+            const row = await queryDB('SELECT id FROM purchases WHERE efi_txid = $1', [txid]);
+            if (row.rows.length > 0) {
+                const purchaseId = row.rows[0].id;
+                if (status === 'PAGA') {
+                    await confirmPurchaseInDB(purchaseId);
+                    console.log('Efi purchase CONFIRMED via webhook:', purchaseId);
+                } else if (status === 'EXPIRADA' || status === 'CANCELADA' || status === 'REEMBOLSADA') {
+                    await cancelPurchaseInDB(purchaseId);
+                    console.log('Efi purchase CANCELED via webhook:', purchaseId);
+                }
             }
         }
 
-        // Responder 2xx rapido (a AbacatePay considera 2xx como entrega ok)
+        // Responder 2xx rapido (a Efi considera 2xx como entrega ok)
         res.json({ success: true });
     } catch (err) {
-        console.error('Abacate webhook error:', err);
+        console.error('Efi webhook error:', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -746,7 +746,7 @@ app.post('/webhook/abacate', async (req, res) => {
 // ============================================
 // EXPIRAÇÃO AUTOMÁTICA DE PENDENTES (30 minutos)
 // ============================================
-const PENDING_EXPIRY_MINUTES = 5;
+const PENDING_EXPIRY_MINUTES = 30;
 
 async function expireOldPendingPurchases() {
     try {
@@ -822,9 +822,10 @@ app.post('/api/admin/add-purchase', async (req, res) => {
 initDB().then(() => {
     app.listen(PORT, () => {
         console.log('Backend Gelinsorteio rodando na porta ' + PORT);
-        console.log('AbacatePay configurado:', !!ABACATE_API_KEY);
+        console.log('API Pix Efi configurada:', !!(EFI_CLIENT_ID && EFI_CLIENT_SECRET && EFI_CERT_BASE64), '| env:', EFI_ENV);
+        console.log('Chave Pix recebedora:', EFI_CHAVE_PIX ? 'ok' : 'FALTANDO (EFI_CHAVE_PIX)');
         console.log('Database configurado:', !!process.env.DATABASE_URL);
-        console.log('Webhook: POST https://gelinsorteio-backend-v2.onrender.com/webhook/abacate');
+        console.log('Webhook: POST https://gelinsorteio-backend-v2.onrender.com/webhook/efi');
     });
 }).catch(err => {
     console.error('Failed to initialize DB:', err);
