@@ -507,8 +507,8 @@ app.get('/api/check-charge/:id', async (req, res) => {
         }
         const statusData = await checkEfiStatus(txid);
         const status = statusData.status || 'ATIVA';
-        // Statuses Efi: ATIVA, PAGA, EXPIRADA, CANCELADA, REEMBOLSADA
-        if (status === 'PAGA') {
+        // Statuses Efi: ATIVA, PAGA, CONCLUIDA (paga), EXPIRADA, CANCELADA, REEMBOLSADA
+        if (status === 'PAGA' || status === 'CONCLUIDA') {
             await confirmPurchaseInDB(id);
         } else if (status === 'EXPIRADA' || status === 'CANCELADA' || status === 'REEMBOLSADA') {
             await cancelPurchaseInDB(id);
@@ -726,7 +726,7 @@ app.post('/webhook/efi', async (req, res) => {
             const row = await queryDB('SELECT id FROM purchases WHERE efi_txid = $1', [txid]);
             if (row.rows.length > 0) {
                 const purchaseId = row.rows[0].id;
-                if (status === 'PAGA') {
+                if (status === 'PAGA' || status === 'CONCLUIDA') {
                     await confirmPurchaseInDB(purchaseId);
                     console.log('Efi purchase CONFIRMED via webhook:', purchaseId);
                 } else if (status === 'EXPIRADA' || status === 'CANCELADA' || status === 'REEMBOLSADA') {
